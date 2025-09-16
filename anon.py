@@ -203,7 +203,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for msg in messages:
                 msg_text = msg[1] or f"_{msg[2]}_"
                 preview = (msg_text[:50] + '...') if len(msg_text) > 50 else msg_text
-                text += f"*{escape_markdown(msg[5])}:*\n{format_as_quote(preview)}\n[Посмотреть и ответить](https://t.me/{context.bot.username}?start=msg_{msg[0]})\n\n" # Placeholder link
+                # A simple way to let user reply is to guide them, direct message viewing isn't simple with start payload
+                text += f"*{escape_markdown(msg[5])}:*\n{format_as_quote(preview)}\n_Нажмите кнопку 'Ответить' под сообщением, чтобы ответить\\._\n\n"
             await query.edit_message_text(text, parse_mode='MarkdownV2', reply_markup=back_to_main_keyboard())
         else:
             await query.edit_message_text("У вас пока нет сообщений\\.", parse_mode='MarkdownV2', reply_markup=back_to_main_keyboard())
@@ -213,7 +214,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(f"✍️ Введите ваш ответ на сообщение \\#{message_id}:", parse_mode='MarkdownV2', reply_markup=back_to_main_keyboard())
 
     if is_admin:
-        if command == "admin_stats":
+        if command == "admin_panel":
+             await query.edit_message_text("🛠️ *Панель администратора*", reply_markup=admin_keyboard(), parse_mode='MarkdownV2')
+        elif command == "admin_stats":
             stats = get_admin_stats()
             text = f"📊 *Статистика:*\n👥 Пользователей: {stats['users']}\n🔗 Ссылок: {stats['links']}\n📨 Сообщений: {stats['messages']}\n💬 Ответов: {stats['replies']}"
             await query.edit_message_text(text, parse_mode='MarkdownV2', reply_markup=admin_keyboard())
@@ -240,7 +243,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         try:
                             if msg_type == 'photo': await query.message.reply_photo(file_id, caption=caption, parse_mode='MarkdownV2')
                             elif msg_type == 'video': await query.message.reply_video(file_id, caption=caption, parse_mode='MarkdownV2')
-                            # Add other media types if needed
+                            elif msg_type == 'document': await query.message.reply_document(file_id, caption=caption, parse_mode='MarkdownV2')
+                            elif msg_type == 'voice': await query.message.reply_voice(file_id, caption=header, parse_mode='MarkdownV2')
                         except Exception as e:
                             logging.error(f"Failed to send media history: {e}")
                             await query.message.reply_text(f"{header}\n_{escape_markdown(msg_type)} не может быть отображен_", parse_mode='MarkdownV2')
@@ -285,7 +289,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data.pop('link_stage')
             link_id = create_anon_link(user.id, title, text)
             link_url = f"https://t.me/{context.bot.username}?start={link_id}"
-            await update.message.reply_text(f"✅ *Ссылка создана\\!*\n\n📝 *{escape_markdown(title)}*\n📋 {escape_markdown(text)}\n\n🔗 `f'{link_url}'`\n\nПоделитесь ей, чтобы получать сообщения\\!", parse_mode='MarkdownV2', reply_markup=main_keyboard())
+            await update.message.reply_text(f"✅ *Ссылка создана\\!*\n\n📝 *{escape_markdown(title)}*\n📋 {escape_markdown(text)}\n\n🔗 `{link_url}`\n\nПоделитесь ей, чтобы получать сообщения\\!", parse_mode='MarkdownV2', reply_markup=main_keyboard())
         return
 
     if is_admin and context.user_data.get('broadcasting'):
@@ -343,12 +347,19 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try: # Send to user
                 if msg_type == 'photo': await context.bot.send_photo(link_info[1], file_id, caption=user_caption, parse_mode='MarkdownV2', reply_markup=message_keyboard(msg_id))
                 elif msg_type == 'video': await context.bot.send_video(link_info[1], file_id, caption=user_caption, parse_mode='MarkdownV2', reply_markup=message_keyboard(msg_id))
-                else: await context.bot.send_message(link_info[1], "📨 _Получен новый анонимный медиафайл_", parse_mode='MarkdownV2') # Fallback for other types
+                elif msg_type == 'document': await context.bot.send_document(link_info[1], file_id, caption=user_caption, parse_mode='MarkdownV2', reply_markup=message_keyboard(msg_id))
+                elif msg_type == 'voice': 
+                    await context.bot.send_voice(link_info[1], file_id)
+                    await context.bot.send_message(link_info[1], "📨 _Получено новое голосовое сообщение_", parse_mode='MarkdownV2', reply_markup=message_keyboard(msg_id))
             except Exception as e: logging.error(f"Failed to send media notification to user: {e}")
 
             try: # Send to admin
-                if msg_type == 'photo': await context.bot.send_photo(ADMIN_ID, file_id, caption=admin_caption, parse_mode='MarkdownV2')
-                elif msg_type == 'video': await context.bot.send_video(ADMIN_ID, file_id, caption=admin_caption, parse_mode='MarkdownV2')
+                if msg_type in ['photo', 'video', 'document']:
+                    if msg_type == 'photo': await context.bot.send_photo(ADMIN_ID, file_id, caption=admin_caption, parse_mode='MarkdownV2')
+                    elif msg_type == 'video': await context.bot.send_video(ADMIN_ID, file_id, caption=admin_caption, parse_mode='MarkdownV2')
+                    elif msg_type == 'document': await context.bot.send_document(ADMIN_ID, file_id, caption=admin_caption, parse_mode='MarkdownV2')
+                elif msg_type == 'voice':
+                    await context.bot.send_voice(ADMIN_ID, file_id, caption=admin_caption, parse_mode='MarkdownV2')
             except Exception as e: logging.error(f"Failed to send media notification to admin: {e}")
             
             await update.message.reply_text("✅ Ваше медиа отправлено анонимно!", reply_markup=main_keyboard())
@@ -372,7 +383,10 @@ def main():
     application.add_handler(CommandHandler("admin", admin_panel))
     application.add_handler(CallbackQueryHandler(button_handler))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-    media_filters = filters.PHOTO | filters.VIDEO | filters.VOICE | filters.DOCUMENT
+    
+    # ИСПРАВЛЕННАЯ СТРОКА
+    media_filters = filters.PHOTO | filters.VIDEO | filters.VOICE | filters.Document.ALL
+    
     application.add_handler(MessageHandler(media_filters & ~filters.COMMAND, handle_media))
 
     application.run_polling()
