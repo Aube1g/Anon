@@ -186,7 +186,7 @@ def save_user(user_id, username, first_name):
 
 def create_anon_link(user_id, title, description):
     link_id = ''.join(secrets.choice(string.ascii_letters + string.digits) for _ in range(10))
-    expires_at = datetime.now() + timedelta(days=365)  # Увеличил до 1 года
+    expires_at = datetime.now() + timedelta(days=365)
     run_query('INSERT INTO links (link_id, user_id, title, description, expires_at) VALUES (?, ?, ?, ?, ?)', 
               (link_id, user_id, title, description, expires_at), commit=True)
     push_db_to_github(f"Create link for user {user_id}")
@@ -319,7 +319,8 @@ def generate_html_report():
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Анонимный Бот - Панель Администратора</title>
+        <title>🟣 Анонимный Бот - Панель Администратора</title>
+        <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;700;900&family=Exo+2:wght@300;400;500;600;700&display=swap" rel="stylesheet">
         <style>
             * {{
                 margin: 0;
@@ -328,192 +329,417 @@ def generate_html_report():
             }}
             
             body {{
-                font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                font-family: 'Exo 2', sans-serif;
+                background: linear-gradient(135deg, #0c0c0c 0%, #1a1a2e 50%, #16213e 100%);
                 min-height: 100vh;
                 padding: 20px;
+                color: #ffffff;
+                overflow-x: hidden;
             }}
             
             .container {{
-                max-width: 1200px;
+                max-width: 1400px;
                 margin: 0 auto;
             }}
             
             .header {{
-                background: rgba(255, 255, 255, 0.1);
-                backdrop-filter: blur(10px);
-                padding: 30px;
-                border-radius: 20px;
-                margin-bottom: 30px;
+                background: linear-gradient(135deg, rgba(102, 126, 234, 0.2) 0%, rgba(118, 75, 162, 0.2) 100%);
+                backdrop-filter: blur(20px);
+                padding: 40px 30px;
+                border-radius: 25px;
+                margin-bottom: 40px;
                 text-align: center;
-                border: 1px solid rgba(255, 255, 255, 0.2);
+                border: 1px solid rgba(255, 255, 255, 0.1);
+                position: relative;
+                overflow: hidden;
+            }}
+            
+            .header::before {{
+                content: '';
+                position: absolute;
+                top: -50%;
+                left: -50%;
+                width: 200%;
+                height: 200%;
+                background: linear-gradient(45deg, transparent, rgba(102, 126, 234, 0.1), transparent);
+                animation: shine 6s infinite linear;
+            }}
+            
+            @keyframes shine {{
+                0% {{ transform: rotate(0deg); }}
+                100% {{ transform: rotate(360deg); }}
+            }}
+            
+            .header-content {{
+                position: relative;
+                z-index: 2;
             }}
             
             .header h1 {{
-                color: white;
-                font-size: 2.5em;
-                margin-bottom: 10px;
-                text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+                font-family: 'Orbitron', monospace;
+                font-size: 3.5em;
+                margin-bottom: 15px;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 50%, #f093fb 100%);
+                -webkit-background-clip: text;
+                -webkit-text-fill-color: transparent;
+                background-clip: text;
+                text-shadow: 0 0 30px rgba(102, 126, 234, 0.5);
+                font-weight: 900;
+                letter-spacing: 2px;
             }}
             
             .header .subtitle {{
-                color: #e0e0ff;
-                font-size: 1.2em;
+                font-size: 1.3em;
+                color: #a0a0ff;
+                margin-bottom: 20px;
+                font-weight: 300;
+            }}
+            
+            .timestamp {{
+                font-family: 'Orbitron', monospace;
+                font-size: 0.9em;
+                color: #ffd700;
+                background: rgba(0, 0, 0, 0.3);
+                padding: 8px 15px;
+                border-radius: 20px;
+                display: inline-block;
+                border: 1px solid rgba(255, 215, 0, 0.3);
             }}
             
             .stats-grid {{
                 display: grid;
-                grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-                gap: 20px;
-                margin-bottom: 30px;
+                grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+                gap: 25px;
+                margin-bottom: 40px;
             }}
             
             .stat-card {{
-                background: rgba(255, 255, 255, 0.1);
-                backdrop-filter: blur(10px);
-                padding: 25px;
-                border-radius: 15px;
+                background: linear-gradient(135deg, rgba(255, 255, 255, 0.1) 0%, rgba(255, 255, 255, 0.05) 100%);
+                backdrop-filter: blur(15px);
+                padding: 30px 25px;
+                border-radius: 20px;
                 text-align: center;
-                border: 1px solid rgba(255, 255, 255, 0.2);
-                transition: transform 0.3s ease, box-shadow 0.3s ease;
+                border: 1px solid rgba(255, 255, 255, 0.1);
+                transition: all 0.3s ease;
+                position: relative;
+                overflow: hidden;
+            }}
+            
+            .stat-card::before {{
+                content: '';
+                position: absolute;
+                top: 0;
+                left: -100%;
+                width: 100%;
+                height: 100%;
+                background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.1), transparent);
+                transition: left 0.5s ease;
+            }}
+            
+            .stat-card:hover::before {{
+                left: 100%;
             }}
             
             .stat-card:hover {{
-                transform: translateY(-5px);
-                box-shadow: 0 10px 25px rgba(0,0,0,0.2);
+                transform: translateY(-8px) scale(1.02);
+                box-shadow: 0 15px 35px rgba(0, 0, 0, 0.4);
+                border-color: rgba(102, 126, 234, 0.3);
             }}
             
             .stat-card h3 {{
-                color: #ffd700;
-                font-size: 2.5em;
-                margin-bottom: 10px;
-                font-weight: bold;
+                font-family: 'Orbitron', monospace;
+                font-size: 3em;
+                margin-bottom: 15px;
+                background: linear-gradient(135deg, #ffd700 0%, #ff6b6b 50%, #667eea 100%);
+                -webkit-background-clip: text;
+                -webkit-text-fill-color: transparent;
+                background-clip: text;
+                font-weight: 700;
             }}
             
             .stat-card p {{
-                color: white;
-                font-size: 0.9em;
-                opacity: 0.9;
+                color: #e0e0ff;
+                font-size: 1em;
+                font-weight: 500;
+                text-transform: uppercase;
+                letter-spacing: 1px;
             }}
             
             .section {{
-                background: rgba(255, 255, 255, 0.1);
-                backdrop-filter: blur(10px);
-                padding: 25px;
-                border-radius: 15px;
-                margin-bottom: 30px;
-                border: 1px solid rgba(255, 255, 255, 0.2);
+                background: linear-gradient(135deg, rgba(255, 255, 255, 0.08) 0%, rgba(255, 255, 255, 0.03) 100%);
+                backdrop-filter: blur(15px);
+                padding: 30px;
+                border-radius: 20px;
+                margin-bottom: 35px;
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                position: relative;
+                overflow: hidden;
+            }}
+            
+            .section::before {{
+                content: '';
+                position: absolute;
+                top: 0;
+                left: 0;
+                right: 0;
+                height: 3px;
+                background: linear-gradient(90deg, #667eea, #764ba2, #f093fb);
             }}
             
             .section h2 {{
-                color: white;
-                margin-bottom: 20px;
-                font-size: 1.5em;
-                border-bottom: 2px solid rgba(255,255,255,0.3);
-                padding-bottom: 10px;
+                font-family: 'Orbitron', monospace;
+                font-size: 1.8em;
+                margin-bottom: 25px;
+                color: #ffffff;
+                display: flex;
+                align-items: center;
+                gap: 15px;
+                font-weight: 600;
+            }}
+            
+            .section h2::before {{
+                content: '';
+                flex: 1;
+                height: 2px;
+                background: linear-gradient(90deg, transparent, #667eea, transparent);
+            }}
+            
+            .section h2::after {{
+                content: '';
+                flex: 1;
+                height: 2px;
+                background: linear-gradient(90deg, transparent, #764ba2, transparent);
             }}
             
             table {{
                 width: 100%;
                 border-collapse: collapse;
-                background: rgba(255, 255, 255, 0.05);
-                border-radius: 10px;
+                background: rgba(255, 255, 255, 0.02);
+                border-radius: 15px;
                 overflow: hidden;
+                margin-top: 15px;
             }}
             
             th, td {{
-                padding: 12px 15px;
+                padding: 15px 20px;
                 text-align: left;
-                border-bottom: 1px solid rgba(255,255,255,0.1);
+                border-bottom: 1px solid rgba(255, 255, 255, 0.05);
             }}
             
             th {{
-                background: rgba(255,255,255,0.1);
+                background: linear-gradient(135deg, rgba(102, 126, 234, 0.2) 0%, rgba(118, 75, 162, 0.2) 100%);
                 color: #ffd700;
                 font-weight: 600;
+                font-family: 'Orbitron', monospace;
+                text-transform: uppercase;
+                letter-spacing: 1px;
+                font-size: 0.9em;
             }}
             
             td {{
-                color: white;
+                color: #e0e0ff;
+                font-weight: 400;
             }}
             
             tr:hover {{
-                background: rgba(255,255,255,0.05);
+                background: rgba(255, 255, 255, 0.05);
+                transform: scale(1.01);
+                transition: all 0.2s ease;
             }}
             
             .badge {{
                 display: inline-block;
-                padding: 3px 8px;
-                border-radius: 12px;
+                padding: 6px 12px;
+                border-radius: 15px;
                 font-size: 0.8em;
                 font-weight: bold;
+                font-family: 'Orbitron', monospace;
+                letter-spacing: 1px;
             }}
             
             .badge-success {{
-                background: #4CAF50;
+                background: linear-gradient(135deg, #4CAF50, #45a049);
                 color: white;
             }}
             
             .badge-info {{
-                background: #2196F3;
+                background: linear-gradient(135deg, #2196F3, #1976D2);
                 color: white;
             }}
             
             .badge-warning {{
-                background: #FF9800;
+                background: linear-gradient(135deg, #FF9800, #F57C00);
                 color: white;
             }}
             
-            .timestamp {{
-                font-family: monospace;
-                font-size: 0.85em;
-                opacity: 0.8;
-            }}
-            
-            @keyframes fadeIn {{
-                from {{ opacity: 0; transform: translateY(20px); }}
-                to {{ opacity: 1; transform: translateY(0); }}
-            }}
-            
-            .fade-in {{
-                animation: fadeIn 0.6s ease-out;
+            .badge-purple {{
+                background: linear-gradient(135deg, #667eea, #764ba2);
+                color: white;
             }}
             
             .file-type {{
-                display: inline-block;
-                width: 20px;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                width: 30px;
+                height: 30px;
+                border-radius: 8px;
+                margin-right: 10px;
+                font-weight: bold;
+            }}
+            
+            .type-text {{ background: linear-gradient(135deg, #4CAF50, #45a049); }}
+            .type-photo {{ background: linear-gradient(135deg, #2196F3, #1976D2); }}
+            .type-video {{ background: linear-gradient(135deg, #FF9800, #F57C00); }}
+            .type-document {{ background: linear-gradient(135deg, #9C27B0, #7B1FA2); }}
+            .type-voice {{ background: linear-gradient(135deg, #FF5722, #E64A19); }}
+            
+            @keyframes fadeInUp {{
+                from {{ 
+                    opacity: 0; 
+                    transform: translateY(30px); 
+                }}
+                to {{ 
+                    opacity: 1; 
+                    transform: translateY(0); 
+                }}
+            }}
+            
+            .fade-in {{
+                animation: fadeInUp 0.8s ease-out forwards;
+            }}
+            
+            .pulse {{
+                animation: pulse 2s infinite;
+            }}
+            
+            @keyframes pulse {{
+                0% {{ box-shadow: 0 0 0 0 rgba(102, 126, 234, 0.4); }}
+                70% {{ box-shadow: 0 0 0 15px rgba(102, 126, 234, 0); }}
+                100% {{ box-shadow: 0 0 0 0 rgba(102, 126, 234, 0); }}
+            }}
+            
+            .floating {{
+                animation: floating 3s ease-in-out infinite;
+            }}
+            
+            @keyframes floating {{
+                0% {{ transform: translateY(0px); }}
+                50% {{ transform: translateY(-10px); }}
+                100% {{ transform: translateY(0px); }}
+            }}
+            
+            .footer {{
                 text-align: center;
-                margin-right: 5px;
+                margin-top: 50px;
+                padding: 30px;
+                background: linear-gradient(135deg, rgba(102, 126, 234, 0.1) 0%, rgba(118, 75, 162, 0.1) 100%);
+                border-radius: 20px;
+                border: 1px solid rgba(255, 255, 255, 0.1);
+            }}
+            
+            .footer-text {{
+                font-family: 'Orbitron', monospace;
+                font-size: 1.1em;
+                color: #ffd700;
+                letter-spacing: 2px;
+            }}
+            
+            /* Специальные стили для разных секций */
+            .user-avatar {{
+                width: 40px;
+                height: 40px;
+                border-radius: 50%;
+                background: linear-gradient(135deg, #667eea, #764ba2);
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                font-weight: bold;
+                color: white;
+                margin-right: 10px;
+            }}
+            
+            .progress-bar {{
+                width: 100%;
+                height: 6px;
+                background: rgba(255, 255, 255, 0.1);
+                border-radius: 3px;
+                overflow: hidden;
+                margin-top: 5px;
+            }}
+            
+            .progress-fill {{
+                height: 100%;
+                background: linear-gradient(90deg, #667eea, #764ba2);
+                border-radius: 3px;
+                transition: width 0.3s ease;
+            }}
+            
+            /* Адаптивность */
+            @media (max-width: 768px) {{
+                .header h1 {{
+                    font-size: 2.5em;
+                }}
+                
+                .stats-grid {{
+                    grid-template-columns: 1fr;
+                }}
+                
+                th, td {{
+                    padding: 10px 15px;
+                    font-size: 0.9em;
+                }}
+                
+                .section {{
+                    padding: 20px;
+                }}
             }}
         </style>
     </head>
     <body>
         <div class="container">
+            <!-- Заголовок -->
             <div class="header fade-in">
-                <h1>🛠️ Панель Администратора</h1>
-                <div class="subtitle">Анонимный Бот - Полная статистика и мониторинг</div>
-                <div class="timestamp">Отчет сгенерирован: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}</div>
+                <div class="header-content">
+                    <h1 class="floating">🛠️ АДМИН ПАНЕЛЬ</h1>
+                    <div class="subtitle">Анонимный Бот - Полная статистика системы в реальном времени</div>
+                    <div class="timestamp pulse">📅 Отчет сгенерирован: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}</div>
+                </div>
             </div>
             
+            <!-- Основная статистика -->
             <div class="stats-grid">
                 <div class="stat-card fade-in">
                     <h3>{data['stats']['users']}</h3>
                     <p>👥 Всего пользователей</p>
+                    <div class="progress-bar">
+                        <div class="progress-fill" style="width: {min(data['stats']['users'] * 2, 100)}%"></div>
+                    </div>
                 </div>
                 <div class="stat-card fade-in">
                     <h3>{data['stats']['links']}</h3>
                     <p>🔗 Активных ссылок</p>
+                    <div class="progress-bar">
+                        <div class="progress-fill" style="width: {min(data['stats']['links'] * 5, 100)}%"></div>
+                    </div>
                 </div>
                 <div class="stat-card fade-in">
                     <h3>{data['stats']['messages']}</h3>
                     <p>📨 Всего сообщений</p>
+                    <div class="progress-bar">
+                        <div class="progress-fill" style="width: {min(data['stats']['messages'] * 0.5, 100)}%"></div>
+                    </div>
                 </div>
                 <div class="stat-card fade-in">
                     <h3>{data['stats']['replies']}</h3>
                     <p>💬 Ответов</p>
+                    <div class="progress-bar">
+                        <div class="progress-fill" style="width: {min(data['stats']['replies'] * 2, 100)}%"></div>
+                    </div>
                 </div>
             </div>
             
+            <!-- Статистика файлов -->
             <div class="stats-grid">
                 <div class="stat-card fade-in">
                     <h3>{data['stats']['photos']}</h3>
@@ -533,31 +759,48 @@ def generate_html_report():
                 </div>
             </div>
             
+            <!-- Пользователи -->
             <div class="section fade-in">
-                <h2>👥 Последние пользователи</h2>
+                <h2>👥 АКТИВНЫЕ ПОЛЬЗОВАТЕЛИ</h2>
                 <table>
                     <thead>
                         <tr>
                             <th>ID</th>
-                            <th>Username</th>
-                            <th>Имя</th>
+                            <th>Информация</th>
                             <th>Регистрация</th>
-                            <th>Ссылки</th>
-                            <th>Сообщения</th>
+                            <th>Активность</th>
+                            <th>Статистика</th>
                         </tr>
                     </thead>
                     <tbody>
     '''
     
-    for user in data['users'][:10]:
+    for user in data['users'][:15]:
+        username_display = f"@{user[1]}" if user[1] else (html.escape(user[2]) if user[2] else f"ID:{user[0]}")
+        created = user[3].split()[0] if isinstance(user[3], str) else user[3].strftime("%Y-%m-%d")
+        
         html_content += f'''
                         <tr>
-                            <td>{user[0]}</td>
-                            <td>@{user[1] if user[1] else 'N/A'}</td>
-                            <td>{html.escape(user[2]) if user[2] else 'N/A'}</td>
-                            <td class="timestamp">{user[3]}</td>
-                            <td><span class="badge badge-info">{user[4]}</span></td>
-                            <td>📨 {user[5]} | 📤 {user[6]}</td>
+                            <td><span class="badge badge-purple">{user[0]}</span></td>
+                            <td>
+                                <div style="display: flex; align-items: center;">
+                                    <div class="user-avatar">
+                                        {username_display[0].upper() if username_display else 'U'}
+                                    </div>
+                                    <div>
+                                        <div style="font-weight: 600;">{username_display}</div>
+                                        <div style="font-size: 0.8em; color: #a0a0ff;">{html.escape(user[2]) if user[2] else 'No Name'}</div>
+                                    </div>
+                                </div>
+                            </td>
+                            <td class="timestamp">{created}</td>
+                            <td>
+                                <span class="badge badge-info">{user[4]} ссылок</span>
+                            </td>
+                            <td>
+                                <span class="badge badge-success">📨 {user[5]}</span>
+                                <span class="badge badge-warning">📤 {user[6]}</span>
+                            </td>
                         </tr>
         '''
     
@@ -566,31 +809,40 @@ def generate_html_report():
                 </table>
             </div>
             
+            <!-- Ссылки -->
             <div class="section fade-in">
-                <h2>🔗 Активные ссылки</h2>
+                <h2>🔗 АКТИВНЫЕ ССЫЛКИ</h2>
                 <table>
                     <thead>
                         <tr>
-                            <th>ID</th>
+                            <th>ID Ссылки</th>
                             <th>Название</th>
                             <th>Владелец</th>
                             <th>Создана</th>
-                            <th>Истекает</th>
                             <th>Сообщения</th>
                         </tr>
                     </thead>
                     <tbody>
     '''
     
-    for link in data['links'][:15]:
+    for link in data['links'][:20]:
+        owner = f"@{link[5]}" if link[5] else (html.escape(link[6]) if link[6] else 'Аноним')
+        created = link[3].split()[0] if isinstance(link[3], str) else link[3].strftime("%Y-%m-%d")
+        
         html_content += f'''
                         <tr>
-                            <td><code>{link[0]}</code></td>
-                            <td>{html.escape(link[1])}</td>
-                            <td>@{link[5] if link[5] else html.escape(link[6])}</td>
-                            <td class="timestamp">{link[3]}</td>
-                            <td class="timestamp">{link[4]}</td>
-                            <td><span class="badge badge-success">{link[7]}</span></td>
+                            <td><code style="background: rgba(255,255,255,0.1); padding: 5px 10px; border-radius: 8px;">{link[0]}</code></td>
+                            <td>
+                                <div style="font-weight: 600;">{html.escape(link[1])}</div>
+                                <div style="font-size: 0.8em; color: #a0a0ff;">{html.escape(link[2]) if link[2] else 'Без описания'}</div>
+                            </td>
+                            <td>{owner}</td>
+                            <td class="timestamp">{created}</td>
+                            <td>
+                                <span class="badge { 'badge-success' if link[7] > 0 else 'badge-warning' }">
+                                    {link[7]} сообщ.
+                                </span>
+                            </td>
                         </tr>
         '''
     
@@ -599,12 +851,12 @@ def generate_html_report():
                 </table>
             </div>
             
+            <!-- Последние сообщения -->
             <div class="section fade-in">
-                <h2>📨 Последние сообщения</h2>
+                <h2>📨 ПОСЛЕДНИЕ СООБЩЕНИЯ</h2>
                 <table>
                     <thead>
                         <tr>
-                            <th>ID</th>
                             <th>Тип</th>
                             <th>От</th>
                             <th>Кому</th>
@@ -616,7 +868,7 @@ def generate_html_report():
                     <tbody>
     '''
     
-    for msg in data['recent_messages'][:20]:
+    for msg in data['recent_messages'][:25]:
         msg_type_icon = {
             'text': '📝',
             'photo': '🖼️',
@@ -625,18 +877,33 @@ def generate_html_report():
             'voice': '🎤'
         }.get(msg[2], '📄')
         
-        file_size = f"{msg[3] // 1024} KB" if msg[3] else '-'
+        type_class = {
+            'text': 'type-text',
+            'photo': 'type-photo',
+            'video': 'type-video',
+            'document': 'type-document',
+            'voice': 'type-voice'
+        }.get(msg[2], 'type-text')
+        
+        file_size = f"{(msg[3] // 1024):,} KB" if msg[3] else '-'
         from_user = f"@{msg[6]}" if msg[6] else (html.escape(msg[7]) if msg[7] else f"ID:{msg[0]}")
         to_user = f"@{msg[8]}" if msg[8] else (html.escape(msg[9]) if msg[9] else f"ID:{msg[0]}")
+        time_display = msg[5].split()[1][:5] if isinstance(msg[5], str) else msg[5].strftime("%H:%M:%S")
         
         html_content += f'''
                         <tr>
-                            <td>#{msg[0]}</td>
-                            <td>{msg_type_icon} {msg[2]}</td>
+                            <td>
+                                <div style="display: flex; align-items: center;">
+                                    <div class="file-type {type_class}">
+                                        {msg_type_icon}
+                                    </div>
+                                    <span style="text-transform: uppercase; font-size: 0.8em; font-weight: 600;">{msg[2]}</span>
+                                </div>
+                            </td>
                             <td>{from_user}</td>
                             <td>{to_user}</td>
                             <td>{html.escape(msg[10]) if msg[10] else 'N/A'}</td>
-                            <td class="timestamp">{msg[5]}</td>
+                            <td class="timestamp">{time_display}</td>
                             <td>{file_size}</td>
                         </tr>
         '''
@@ -646,28 +913,69 @@ def generate_html_report():
                 </table>
             </div>
             
-            <div class="header" style="text-align: center; margin-top: 40px;">
-                <div class="subtitle">🟣 Анонимный Бот | Создано с ❤️ для Sirok</div>
+            <!-- Футер -->
+            <div class="footer fade-in">
+                <div class="footer-text">
+                    🟣 АНОНИМНЫЙ БОТ | СИСТЕМА УПРАВЛЕНИЯ | SIROK228
+                </div>
+                <div style="margin-top: 15px; color: #a0a0ff; font-size: 0.9em;">
+                    💫 Создано с использованием передовых технологий
+                </div>
             </div>
         </div>
         
         <script>
-            // Добавляем анимацию при прокрутке
+            // Продвинутые анимации при прокрутке
             const observerOptions = {{
-                threshold: 0.1
+                threshold: 0.05,
+                rootMargin: '0px 0px -50px 0px'
             }};
             
             const observer = new IntersectionObserver((entries) => {{
                 entries.forEach(entry => {{
                     if (entry.isIntersecting) {{
-                        entry.target.style.animation = 'fadeIn 0.6s ease-out forwards';
+                        entry.target.style.opacity = '1';
+                        entry.target.style.transform = 'translateY(0)';
+                        entry.target.style.animation = 'fadeInUp 0.8s ease-out forwards';
                     }}
                 }});
             }}, observerOptions);
             
+            // Применяем к всем элементам
             document.querySelectorAll('.section, .stat-card').forEach(el => {{
+                el.style.opacity = '0';
+                el.style.transform = 'translateY(30px)';
+                el.style.transition = 'all 0.8s ease-out';
                 observer.observe(el);
             }});
+            
+            // Анимация прогресс-баров
+            setTimeout(() => {{
+                document.querySelectorAll('.progress-fill').forEach(bar => {{
+                    const width = bar.style.width;
+                    bar.style.width = '0';
+                    setTimeout(() => {{
+                        bar.style.transition = 'width 1.5s ease-in-out';
+                        bar.style.width = width;
+                    }}, 100);
+                }});
+            }}, 500);
+            
+            // Периодическое обновление времени
+            function updateTime() {{
+                const now = new Date();
+                const timeString = now.toLocaleString('ru-RU', {{
+                    year: 'numeric',
+                    month: '2-digit',
+                    day: '2-digit',
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    second: '2-digit'
+                }});
+                document.querySelector('.timestamp:not(.pulse)').textContent = '📅 Отчет сгенерирован: ' + timeString;
+            }}
+            
+            setInterval(updateTime, 1000);
         </script>
     </body>
     </html>
@@ -705,20 +1013,24 @@ def message_details_keyboard(message_id):
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("💬 Ответить", callback_data=f"reply_{message_id}")],
         [InlineKeyboardButton("📋 Просмотреть ответы", callback_data=f"view_replies_{message_id}")],
-        [InlineKeyboardButton("🔙 Назад", callback_data="my_messages")]
+        [InlineKeyboardButton("🔄 Продолжить ответы", callback_data=f"continue_reply_{message_id}")],
+        [InlineKeyboardButton("🔙 Назад к сообщениям", callback_data="my_messages")]
     ])
 
 def admin_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📊 Статистика", callback_data="admin_stats")],
         [InlineKeyboardButton("📜 История переписки", callback_data="admin_history")],
-        [InlineKeyboardButton("📊 HTML Отчет", callback_data="admin_html_report")],
+        [InlineKeyboardButton("🎨 HTML Отчет", callback_data="admin_html_report")],
         [InlineKeyboardButton("📢 Оповещение", callback_data="admin_broadcast")],
         [InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]
     ])
 
 def back_to_main_keyboard():
     return InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]])
+
+def back_to_admin_keyboard():
+    return InlineKeyboardMarkup([[InlineKeyboardButton("🔙 В админку", callback_data="admin_panel")]])
 
 # --- ОСНОВНЫЕ ОБРАБОТЧИКИ ---
 
@@ -742,82 +1054,154 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logging.error(f"Ошибка в команде start: {e}")
         await update.message.reply_text("❌ Произошла ошибка. Попробуйте позже.")
 
+async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик команды /admin"""
+    try:
+        user = update.effective_user
+        if user.username == ADMIN_USERNAME or user.id == ADMIN_ID:
+            # Сбрасываем состояние аутентификации
+            context.user_data['admin_authenticated'] = False
+            await update.message.reply_text(
+                "🔐 *Панель администратора*\n\nВведите пароль для доступа:",
+                parse_mode='MarkdownV2',
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data="main_menu")]])
+            )
+        else:
+            await update.message.reply_text("⛔️ Доступ запрещен\\.", parse_mode='MarkdownV2')
+    except Exception as e:
+        logging.error(f"Ошибка в команде admin: {e}")
+        await update.message.reply_text("❌ Произошла ошибка. Попробуйте позже.")
+
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         query = update.callback_query
         await query.answer()
         user = query.from_user
         data = query.data
-        parts = data.split('_')
-        command = parts[0]
         is_admin = user.username == ADMIN_USERNAME or user.id == ADMIN_ID
 
-        if command == "main":
+        if data == "main_menu":
             await query.edit_message_text("🎭 *Главное меню*", reply_markup=main_keyboard(), parse_mode='MarkdownV2')
         
-        elif command == "my":
-            if data == "my_links":
-                links = get_user_links(user.id)
-                if links:
-                    text = "🔗 *Ваши анонимные ссылки:*\n\n"
-                    for link in links:
-                        link_url = f"https://t.me/{context.bot.username}?start={link[0]}"
-                        created = format_datetime(link[3])
-                        text += f"📝 *{escape_markdown(link[1])}*\n📋 {escape_markdown(link[2])}\n🔗 `{link_url}`\n🕒 `{created}`\n\n"
-                    await query.edit_message_text(text, parse_mode='MarkdownV2', reply_markup=back_to_main_keyboard())
-                else:
-                    await query.edit_message_text("У вас пока нет созданных ссылок\\.", reply_markup=back_to_main_keyboard(), parse_mode='MarkdownV2')
-            
-            elif data == "my_messages":
-                messages = get_user_messages_with_replies(user.id)
-                if messages:
-                    text = "📨 *Ваши последние сообщения:*\n\n"
-                    for msg in messages:
-                        msg_id, msg_text, msg_type, file_id, file_size, file_name, created, link_title, link_id, reply_count = msg
-                        
-                        # Иконка типа сообщения
-                        type_icon = {"text": "📝", "photo": "🖼️", "video": "🎥", "document": "📄", "voice": "🎤"}.get(msg_type, "📄")
-                        
-                        preview = msg_text or f"*{msg_type}*"
-                        if len(preview) > 50:
-                            preview = preview[:50] + "..."
-                            
-                        created_str = format_datetime(created)
-                        text += f"{type_icon} *{escape_markdown(link_title)}*\n{format_as_quote(preview)}\n🕒 `{created_str}` | 💬 Ответов: {reply_count}\n\n"
-                    
-                    await query.edit_message_text(text, parse_mode='MarkdownV2', reply_markup=back_to_main_keyboard())
-                else:
-                    await query.edit_message_text("У вас пока нет сообщений\\.", parse_mode='MarkdownV2', reply_markup=back_to_main_keyboard())
+        elif data == "my_links":
+            links = get_user_links(user.id)
+            if links:
+                text = "🔗 *Ваши анонимные ссылки:*\n\n"
+                for link in links:
+                    link_url = f"https://t.me/{context.bot.username}?start={link[0]}"
+                    created = format_datetime(link[3])
+                    text += f"📝 *{escape_markdown(link[1])}*\n📋 {escape_markdown(link[2])}\n🔗 `{link_url}`\n🕒 `{created}`\n\n"
+                await query.edit_message_text(text, parse_mode='MarkdownV2', reply_markup=back_to_main_keyboard())
+            else:
+                await query.edit_message_text("У вас пока нет созданных ссылок\\.", reply_markup=back_to_main_keyboard(), parse_mode='MarkdownV2')
         
-        elif command == "create":
+        elif data == "my_messages":
+            messages = get_user_messages_with_replies(user.id)
+            if messages:
+                text = "📨 *Ваши последние сообщения:*\n\n"
+                for msg in messages:
+                    msg_id, msg_text, msg_type, file_id, file_size, file_name, created, link_title, link_id, reply_count = msg
+                    
+                    type_icon = {"text": "📝", "photo": "🖼️", "video": "🎥", "document": "📄", "voice": "🎤"}.get(msg_type, "📄")
+                    
+                    preview = msg_text or f"*{msg_type}*"
+                    if len(preview) > 50:
+                        preview = preview[:50] + "..."
+                        
+                    created_str = format_datetime(created)
+                    text += f"{type_icon} *{escape_markdown(link_title)}*\n{format_as_quote(preview)}\n🕒 `{created_str}` | 💬 Ответов: {reply_count}\n\n"
+                
+                await query.edit_message_text(text, parse_mode='MarkdownV2', reply_markup=back_to_main_keyboard())
+            else:
+                await query.edit_message_text("У вас пока нет сообщений\\.", parse_mode='MarkdownV2', reply_markup=back_to_main_keyboard())
+        
+        elif data == "create_link":
             context.user_data['creating_link'] = True
             context.user_data['link_stage'] = 'title'
             await query.edit_message_text("📝 Введите *название* для вашей ссылки:", parse_mode='MarkdownV2', reply_markup=back_to_main_keyboard())
         
-        elif command == "reply":
+        elif data.startswith("reply_"):
             message_id = int(data.replace("reply_", ""))
             context.user_data['replying_to'] = message_id
-            await query.edit_message_text(f"✍️ Введите ваш ответ на сообщение \\#{message_id}:", parse_mode='MarkdownV2', reply_markup=back_to_main_keyboard())
+            context.user_data['reply_mode'] = 'single'
+            await query.edit_message_text(
+                f"✍️ *Режим ответа на сообщение \\#{message_id}*\n\nВведите ваш ответ:",
+                parse_mode='MarkdownV2', 
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("💬 Отправить один ответ", callback_data=f"confirm_reply_{message_id}")],
+                    [InlineKeyboardButton("🔄 Режим нескольких ответов", callback_data=f"multi_reply_{message_id}")],
+                    [InlineKeyboardButton("🔙 Назад", callback_data=f"view_replies_{message_id}")]
+                ])
+            )
         
-        elif command == "view":
-            if data.startswith("view_replies_"):
-                message_id = int(data.replace("view_replies_", ""))
-                replies = get_message_replies(message_id)
-                if replies:
-                    text = f"💬 *Ответы на сообщение \\#{message_id}:*\n\n"
-                    for reply in replies:
-                        reply_text, created, username, first_name = reply
-                        sender = f"@{username}" if username else (first_name or "Аноним")
-                        created_str = format_datetime(created)
-                        text += f"👤 *{escape_markdown(sender)}* \\(`{created_str}`\\):\n{format_as_quote(reply_text)}\n\n"
-                    await query.edit_message_text(text, parse_mode='MarkdownV2', reply_markup=message_details_keyboard(message_id))
-                else:
-                    await query.edit_message_text(f"💬 На сообщение \\#{message_id} пока нет ответов\\.", parse_mode='MarkdownV2', reply_markup=message_details_keyboard(message_id))
+        elif data.startswith("multi_reply_"):
+            message_id = int(data.replace("multi_reply_", ""))
+            context.user_data['replying_to'] = message_id
+            context.user_data['reply_mode'] = 'multi'
+            context.user_data['multi_reply_count'] = 0
+            await query.edit_message_text(
+                f"🔄 *Режим нескольких ответов на сообщение \\#{message_id}*\n\nВведите первый ответ:\n\n_Вы можете отправлять несколько ответов подряд\\. Для завершения нажмите \"Завершить ответы\"_",
+                parse_mode='MarkdownV2',
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⏹️ Завершить ответы", callback_data=f"end_multi_reply_{message_id}")],
+                    [InlineKeyboardButton("🔙 Назад", callback_data=f"view_replies_{message_id}")]
+                ])
+            )
+        
+        elif data.startswith("end_multi_reply_"):
+            message_id = int(data.replace("end_multi_reply_", ""))
+            count = context.user_data.get('multi_reply_count', 0)
+            context.user_data.pop('replying_to', None)
+            context.user_data.pop('reply_mode', None)
+            context.user_data.pop('multi_reply_count', None)
+            await query.edit_message_text(
+                f"✅ *Режим ответов завершен*\n\nОтправлено ответов: {count}\n\nОтветы доставлены анонимно\\!",
+                parse_mode='MarkdownV2',
+                reply_markup=message_details_keyboard(message_id)
+            )
+        
+        elif data.startswith("continue_reply_"):
+            message_id = int(data.replace("continue_reply_", ""))
+            context.user_data['replying_to'] = message_id
+            context.user_data['reply_mode'] = 'multi'
+            current_count = context.user_data.get('multi_reply_count', 0)
+            await query.edit_message_text(
+                f"🔄 *Продолжение ответов на сообщение \\#{message_id}*\n\nТекущее количество ответов: {current_count}\n\nВведите следующий ответ:",
+                parse_mode='MarkdownV2',
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⏹️ Завершить ответы", callback_data=f"end_multi_reply_{message_id}")],
+                    [InlineKeyboardButton("🔙 Назад", callback_data=f"view_replies_{message_id}")]
+                ])
+            )
+        
+        elif data.startswith("view_replies_"):
+            message_id = int(data.replace("view_replies_", ""))
+            replies = get_message_replies(message_id)
+            if replies:
+                text = f"💬 *Ответы на сообщение \\#{message_id}:*\n\n"
+                for i, reply in enumerate(replies, 1):
+                    reply_text, created, username, first_name = reply
+                    sender = f"@{username}" if username else (first_name or "Аноним")
+                    created_str = format_datetime(created)
+                    text += f"{i}\\. 👤 *{escape_markdown(sender)}* \\(`{created_str}`\\):\n{format_as_quote(reply_text)}\n\n"
+                await query.edit_message_text(text, parse_mode='MarkdownV2', reply_markup=message_details_keyboard(message_id))
+            else:
+                await query.edit_message_text(
+                    f"💬 На сообщение \\#{message_id} пока нет ответов\\.\n\nБудьте первым, кто ответит\\!",
+                    parse_mode='MarkdownV2', 
+                    reply_markup=message_details_keyboard(message_id)
+                )
 
         # АДМИН ПАНЕЛЬ
         if is_admin:
-            if command == "admin":
-                if data == "admin_stats":
+            if data == "admin_panel":
+                if context.user_data.get('admin_authenticated'):
+                    await query.edit_message_text("🛠️ *Панель администратора*", reply_markup=admin_keyboard(), parse_mode='MarkdownV2')
+                else:
+                    await query.edit_message_text("🔐 *Требуется аутентификация*\n\nВведите пароль:", parse_mode='MarkdownV2')
+            
+            elif data == "admin_stats":
+                if context.user_data.get('admin_authenticated'):
                     stats = get_admin_stats()
                     text = f"""📊 *Статистика бота:*
 
@@ -835,8 +1219,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 • Документов: {stats['documents']}
 • Голосовых: {stats['voice']}"""
                     await query.edit_message_text(text, parse_mode='MarkdownV2', reply_markup=admin_keyboard())
-                
-                elif data == "admin_history":
+                else:
+                    await query.answer("❌ Требуется аутентификация!", show_alert=True)
+            
+            elif data == "admin_history":
+                if context.user_data.get('admin_authenticated'):
                     users = get_all_users_for_admin()
                     if users:
                         kb = [[InlineKeyboardButton(f"👤 {u[1] or u[2] or f'ID: {u[0]}'}", callback_data=f"admin_view_user:{u[0]}")] for u in users[:20]]
@@ -844,8 +1231,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         await query.edit_message_text("👥 *Выберите пользователя для просмотра истории:*", reply_markup=InlineKeyboardMarkup(kb))
                     else:
                         await query.edit_message_text("Пользователей не найдено\\.", parse_mode='MarkdownV2', reply_markup=admin_keyboard())
-                
-                elif data == "admin_html_report":
+                else:
+                    await query.answer("❌ Требуется аутентификация!", show_alert=True)
+            
+            elif data == "admin_html_report":
+                if context.user_data.get('admin_authenticated'):
+                    await query.edit_message_text("🔄 *Генерация HTML отчета...*", parse_mode='MarkdownV2')
+                    
                     # Генерируем HTML отчет
                     html_content = generate_html_report()
                     
@@ -859,18 +1251,27 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         await query.message.reply_document(
                             document=f,
                             filename=f"admin_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html",
-                            caption="📊 *Полный HTML отчет администратора*\nОткройте файл в браузере для просмотра красивой статистики\\!",
+                            caption="🎨 *Красивый HTML отчет администратора*\n\nОткройте файл в браузере для просмотра полной статистики с анимациями\\!",
                             parse_mode='MarkdownV2'
                         )
                     
-                    await query.edit_message_text("📊 HTML отчет сгенерирован и отправлен\\!", parse_mode='MarkdownV2', reply_markup=admin_keyboard())
-                
-                elif data == "admin_broadcast":
-                    context.user_data['broadcasting'] = True
-                    await query.edit_message_text("📢 Введите сообщение для рассылки всем пользователям:", reply_markup=back_to_main_keyboard())
+                    await query.edit_message_text("✅ *HTML отчет сгенерирован и отправлен\\!*\n\nПроверьте файл выше\\!", parse_mode='MarkdownV2', reply_markup=admin_keyboard())
+                else:
+                    await query.answer("❌ Требуется аутентификация!", show_alert=True)
             
-            elif command == "admin_view":
-                if data.startswith("admin_view_user:"):
+            elif data == "admin_broadcast":
+                if context.user_data.get('admin_authenticated'):
+                    context.user_data['broadcasting'] = True
+                    await query.edit_message_text(
+                        "📢 *Режим рассылки*\n\nВведите сообщение для отправки всем пользователям:",
+                        parse_mode='MarkdownV2', 
+                        reply_markup=back_to_admin_keyboard()
+                    )
+                else:
+                    await query.answer("❌ Требуется аутентификация!", show_alert=True)
+            
+            elif data.startswith("admin_view_user:"):
+                if context.user_data.get('admin_authenticated'):
                     user_id = int(data.split(":")[1])
                     history = get_full_history_for_admin(user_id)
                     
@@ -880,8 +1281,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     
                     await query.edit_message_text(f"📜 *История переписки для пользователя ID {user_id}*\n*Всего сообщений: {len(history)}*", parse_mode='MarkdownV2')
                     
-                    # Отправляем сообщения по частям
-                    for i, msg in enumerate(history[:10]):  # Ограничиваем первые 10 сообщений
+                    # Отправляем первые 5 сообщений для примера
+                    for i, msg in enumerate(history[:5]):
                         msg_id, msg_text, msg_type, file_id, file_size, file_name, created, from_user, from_name, to_user, to_name, link_title = msg
                         
                         created_str = format_datetime(created)
@@ -900,21 +1301,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                 file_info += f"\n*Файл:* {escape_markdown(file_name)}"
                             
                             caption = f"{header}{file_info}"
-                            
-                            try:
-                                if msg_type == 'photo': 
-                                    await query.message.reply_photo(file_id, caption=caption, parse_mode='MarkdownV2')
-                                elif msg_type == 'video': 
-                                    await query.message.reply_video(file_id, caption=caption, parse_mode='MarkdownV2')
-                                elif msg_type == 'document': 
-                                    await query.message.reply_document(file_id, caption=caption, parse_mode='MarkdownV2')
-                                elif msg_type == 'voice': 
-                                    await query.message.reply_voice(file_id, caption=caption, parse_mode='MarkdownV2')
-                            except Exception as e:
-                                await query.message.reply_text(f"{header}\n*Файл недоступен:* {escape_markdown(str(e))}", parse_mode='MarkdownV2')
+                            await query.message.reply_text(f"{caption}\n\n*Содержание:* {format_as_quote(msg_text)}", parse_mode='MarkdownV2')
                     
-                    if len(history) > 10:
-                        await query.message.reply_text(f"*... и ещё {len(history) - 10} сообщений*\n_Для полного просмотра используйте HTML отчет_", parse_mode='MarkdownV2')
+                    if len(history) > 5:
+                        await query.message.reply_text(f"*... и ещё {len(history) - 5} сообщений*\n_Для полного просмотра используйте HTML отчет_", parse_mode='MarkdownV2')
+                    
+                    await query.message.reply_text("🛠️ *Панель администратора*", reply_markup=admin_keyboard(), parse_mode='MarkdownV2')
+                else:
+                    await query.answer("❌ Требуется аутентификация!", show_alert=True)
 
     except Exception as e:
         logging.error(f"Ошибка в обработчике кнопок: {e}")
@@ -933,13 +1327,17 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Проверка пароля для админки
         if text == ADMIN_PASSWORD and is_admin:
             context.user_data['admin_authenticated'] = True
-            await update.message.reply_text("✅ *Пароль принят! Добро пожаловать в админ-панель.*", 
-                                          reply_markup=admin_keyboard(), parse_mode='MarkdownV2')
+            await update.message.reply_text(
+                "✅ *Пароль принят! Добро пожаловать в админ-панель.*", 
+                reply_markup=admin_keyboard(), 
+                parse_mode='MarkdownV2'
+            )
             return
 
-        # Ответ на сообщение
-        if 'replying_to' in context.user_data:
+        # Ответ на сообщение (одиночный режим)
+        if 'replying_to' in context.user_data and context.user_data.get('reply_mode') == 'single':
             msg_id = context.user_data.pop('replying_to')
+            context.user_data.pop('reply_mode', None)
             save_reply(msg_id, user.id, text)
             original_msg = run_query("SELECT m.from_user_id, m.message_text FROM messages m WHERE m.message_id = ?", (msg_id,), fetch="one")
             if original_msg:
@@ -949,6 +1347,34 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 except Exception as e:
                     logging.error(f"Failed to send reply notification: {e}")
             await update.message.reply_text("✅ Ваш ответ отправлен анонимно!", reply_markup=main_keyboard())
+            return
+
+        # Ответ на сообщение (режим нескольких ответов)
+        if 'replying_to' in context.user_data and context.user_data.get('reply_mode') == 'multi':
+            msg_id = context.user_data['replying_to']
+            save_reply(msg_id, user.id, text)
+            
+            # Увеличиваем счетчик ответов
+            current_count = context.user_data.get('multi_reply_count', 0)
+            context.user_data['multi_reply_count'] = current_count + 1
+            
+            original_msg = run_query("SELECT m.from_user_id, m.message_text FROM messages m WHERE m.message_id = ?", (msg_id,), fetch="one")
+            if original_msg:
+                try:
+                    reply_notification = f"💬 *Получен ответ на ваше сообщение:*\n{format_as_quote(original_msg[1])}\n\n*Ответ #{current_count + 1}:*\n{format_as_quote(text)}"
+                    await context.bot.send_message(original_msg[0], reply_notification, parse_mode='MarkdownV2')
+                except Exception as e:
+                    logging.error(f"Failed to send reply notification: {e}")
+            
+            await update.message.reply_text(
+                f"✅ *Ответ #{current_count + 1} отправлен\\!*\n\nМожете отправить следующий ответ или завершить режим ответов\\.",
+                parse_mode='MarkdownV2',
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔄 Продолжить ответы", callback_data=f"continue_reply_{msg_id}")],
+                    [InlineKeyboardButton("⏹️ Завершить ответы", callback_data=f"end_multi_reply_{msg_id}")],
+                    [InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]
+                ])
+            )
             return
 
         # Создание ссылки
@@ -964,7 +1390,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 context.user_data.pop('link_stage')
                 link_id = create_anon_link(user.id, title, text)
                 link_url = f"https://t.me/{context.bot.username}?start={link_id}"
-                await update.message.reply_text(f"✅ *Ссылка создана\\!*\n\n📝 *{escape_markdown(title)}*\n📋 {escape_markdown(text)}\n\n🔗 `{link_url}`\n\nПоделитесь ей, чтобы получать сообщения\\!", parse_mode='MarkdownV2', reply_markup=main_keyboard())
+                await update.message.reply_text(
+                    f"✅ *Ссылка создана\\!*\n\n📝 *{escape_markdown(title)}*\n📋 {escape_markdown(text)}\n\n🔗 `{link_url}`\n\nПоделитесь ей, чтобы получать сообщения\\!",
+                    parse_mode='MarkdownV2', 
+                    reply_markup=main_keyboard()
+                )
             return
 
         # Рассылка от админа
@@ -979,7 +1409,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         sent_count += 1
                     except Exception as e:
                         logging.warning(f"Broadcast failed for user {u[0]}: {e}")
-            await update.message.reply_text(f"📢 Рассылка завершена. Отправлено {sent_count}/{len(users) if users else 0} пользователям.", reply_markup=admin_keyboard())
+            await update.message.reply_text(
+                f"📢 *Рассылка завершена*\n\nОтправлено: {sent_count}/{len(users) if users else 0} пользователям\\.",
+                parse_mode='MarkdownV2', 
+                reply_markup=admin_keyboard()
+            )
             return
 
         # Отправка анонимного сообщения
@@ -1077,19 +1511,6 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logging.error(f"Ошибка в обработчике медиа: {e}")
         await update.message.reply_text("❌ Произошла ошибка при отправке медиа.")
 
-async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        user = update.effective_user
-        if user.username == ADMIN_USERNAME or user.id == ADMIN_ID:
-            if context.user_data.get('admin_authenticated'):
-                await update.message.reply_text("🛠️ *Панель администратора*", reply_markup=admin_keyboard(), parse_mode='MarkdownV2')
-            else:
-                await update.message.reply_text("🔐 *Требуется пароль для доступа к админ-панели*\nВведите пароль:", parse_mode='MarkdownV2')
-        else:
-            await update.message.reply_text("⛔️ Доступ запрещен\\.", parse_mode='MarkdownV2')
-    except Exception as e:
-        logging.error(f"Ошибка в команде admin: {e}")
-
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик ошибок."""
     logging.error(f"Exception while handling an update: {context.error}", exc_info=context.error)
@@ -1112,7 +1533,7 @@ def main():
     
     # Добавление обработчиков
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("admin", admin_panel))
+    application.add_handler(CommandHandler("admin", admin_command))  # Исправленный обработчик
     application.add_handler(CallbackQueryHandler(button_handler))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     media_filters = filters.PHOTO | filters.VIDEO | filters.VOICE | filters.Document.ALL
@@ -1126,7 +1547,7 @@ def main():
     try:
         application.run_polling(
             allowed_updates=Update.ALL_TYPES,
-            drop_pending_updates=False,  # Не удаляем pending updates чтобы не терять данные
+            drop_pending_updates=False,
             close_loop=False
         )
     except Exception as e:
