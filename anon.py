@@ -1785,6 +1785,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             elif data == "confirm_shutdown":
                 if context.user_data.get('admin_authenticated'):
+                    # Используем глобальную переменную напрямую
                     global bot_shutdown_requested
                     bot_shutdown_requested = True
                     
