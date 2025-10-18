@@ -169,6 +169,7 @@ def init_db():
                 file_size INTEGER,
                 file_name TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, 
+                is_active BOOLEAN DEFAULT 1,
                 FOREIGN KEY (link_id) REFERENCES links (link_id)
             )
         ''')
@@ -180,6 +181,7 @@ def init_db():
                 from_user_id INTEGER, 
                 reply_text TEXT, 
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, 
+                is_active BOOLEAN DEFAULT 1,
                 FOREIGN KEY (message_id) REFERENCES messages (message_id)
             )
         ''')
@@ -248,10 +250,10 @@ def get_user_messages_with_replies(user_id, limit=50):
     return run_query('''
         SELECT m.message_id, m.message_text, m.message_type, m.file_id, m.file_size, m.file_name, 
                m.created_at, l.title as link_title, l.link_id,
-               (SELECT COUNT(*) FROM replies r WHERE r.message_id = m.message_id) as reply_count
+               (SELECT COUNT(*) FROM replies r WHERE r.message_id = m.message_id AND r.is_active = 1) as reply_count
         FROM messages m 
         JOIN links l ON m.link_id = l.link_id 
-        WHERE m.to_user_id = ? 
+        WHERE m.to_user_id = ? AND m.is_active = 1
         ORDER BY m.created_at DESC LIMIT ?
     ''', (user_id, limit), fetch="all")
 
@@ -260,7 +262,7 @@ def get_message_replies(message_id):
         SELECT r.reply_id, r.reply_text, r.created_at, u.username, u.first_name
         FROM replies r
         LEFT JOIN users u ON r.from_user_id = u.user_id
-        WHERE r.message_id = ?
+        WHERE r.message_id = ? AND r.is_active = 1
         ORDER BY r.created_at ASC
     ''', (message_id,), fetch="all")
 
@@ -274,7 +276,7 @@ def get_full_history_for_admin(user_id):
         LEFT JOIN users u_from ON m.from_user_id = u_from.user_id 
         LEFT JOIN users u_to ON m.to_user_id = u_to.user_id
         LEFT JOIN links l ON m.link_id = l.link_id
-        WHERE m.from_user_id = ? OR m.to_user_id = ? 
+        WHERE (m.from_user_id = ? OR m.to_user_id = ?) AND m.is_active = 1
         ORDER BY m.created_at ASC
     ''', (user_id, user_id), fetch="all")
 
@@ -299,7 +301,7 @@ def get_conversation_for_link(link_id):
             NULL as reply_id
         FROM messages m
         LEFT JOIN users u ON m.from_user_id = u.user_id
-        WHERE m.link_id = ?
+        WHERE m.link_id = ? AND m.is_active = 1
         
         UNION ALL
         
@@ -322,7 +324,7 @@ def get_conversation_for_link(link_id):
         FROM replies r
         LEFT JOIN users u ON r.from_user_id = u.user_id
         LEFT JOIN messages m ON r.message_id = m.message_id
-        WHERE m.link_id = ?
+        WHERE m.link_id = ? AND r.is_active = 1
         
         ORDER BY created_at ASC
     ''', (link_id, link_id), fetch="all")
@@ -353,7 +355,7 @@ def get_conversation_for_user(user_id):
         LEFT JOIN users u_from ON m.from_user_id = u_from.user_id
         LEFT JOIN users u_to ON m.to_user_id = u_to.user_id
         LEFT JOIN links l ON m.link_id = l.link_id
-        WHERE m.from_user_id = ? OR m.to_user_id = ?
+        WHERE (m.from_user_id = ? OR m.to_user_id = ?) AND m.is_active = 1
         
         UNION ALL
         
@@ -377,7 +379,7 @@ def get_conversation_for_user(user_id):
             r.reply_text,
             r.reply_id
         FROM replies r
-        WHERE r.from_user_id = ?
+        WHERE r.from_user_id = ? AND r.is_active = 1
         
         ORDER BY created_at ASC
     ''', (user_id, user_id, user_id), fetch="all")
@@ -390,13 +392,13 @@ def get_admin_stats():
     try:
         stats['users'] = run_query("SELECT COUNT(*) FROM users", fetch="one")[0] or 0
         stats['links'] = run_query("SELECT COUNT(*) FROM links WHERE is_active = 1", fetch="one")[0] or 0
-        stats['messages'] = run_query("SELECT COUNT(*) FROM messages", fetch="one")[0] or 0
-        stats['replies'] = run_query("SELECT COUNT(*) FROM replies", fetch="one")[0] or 0
+        stats['messages'] = run_query("SELECT COUNT(*) FROM messages WHERE is_active = 1", fetch="one")[0] or 0
+        stats['replies'] = run_query("SELECT COUNT(*) FROM replies WHERE is_active = 1", fetch="one")[0] or 0
         
-        stats['photos'] = run_query("SELECT COUNT(*) FROM messages WHERE message_type = 'photo'", fetch="one")[0] or 0
-        stats['videos'] = run_query("SELECT COUNT(*) FROM messages WHERE message_type = 'video'", fetch="one")[0] or 0
-        stats['documents'] = run_query("SELECT COUNT(*) FROM messages WHERE message_type = 'document'", fetch="one")[0] or 0
-        stats['voice'] = run_query("SELECT COUNT(*) FROM messages WHERE message_type = 'voice'", fetch="one")[0] or 0
+        stats['photos'] = run_query("SELECT COUNT(*) FROM messages WHERE message_type = 'photo' AND is_active = 1", fetch="one")[0] or 0
+        stats['videos'] = run_query("SELECT COUNT(*) FROM messages WHERE message_type = 'video' AND is_active = 1", fetch="one")[0] or 0
+        stats['documents'] = run_query("SELECT COUNT(*) FROM messages WHERE message_type = 'document' AND is_active = 1", fetch="one")[0] or 0
+        stats['voice'] = run_query("SELECT COUNT(*) FROM messages WHERE message_type = 'voice' AND is_active = 1", fetch="one")[0] or 0
     except Exception as e:
         logging.error(f"Ошибка при получении статистики: {e}")
         # Возвращаем значения по умолчанию
@@ -404,15 +406,51 @@ def get_admin_stats():
     
     return stats
 
+# --- ФУНКЦИИ УДАЛЕНИЯ ---
+
+def deactivate_link(link_id):
+    """Деактивирует ссылку"""
+    return run_query('UPDATE links SET is_active = 0 WHERE link_id = ?', (link_id,), commit=True)
+
+def deactivate_message(message_id):
+    """Деактивирует сообщение"""
+    return run_query('UPDATE messages SET is_active = 0 WHERE message_id = ?', (message_id,), commit=True)
+
+def deactivate_reply(reply_id):
+    """Деактивирует ответ"""
+    return run_query('UPDATE replies SET is_active = 0 WHERE reply_id = ?', (reply_id,), commit=True)
+
+def get_message_info(message_id):
+    """Получает информацию о сообщении"""
+    return run_query('''
+        SELECT m.message_text, m.message_type, m.file_name, m.created_at, 
+               u_from.username as from_username, u_from.first_name as from_first_name,
+               u_to.username as to_username, u_to.first_name as to_first_name,
+               l.title as link_title
+        FROM messages m
+        LEFT JOIN users u_from ON m.from_user_id = u_from.user_id
+        LEFT JOIN users u_to ON m.to_user_id = u_to.user_id
+        LEFT JOIN links l ON m.link_id = l.link_id
+        WHERE m.message_id = ?
+    ''', (message_id,), fetch="one")
+
+def get_link_owner(link_id):
+    """Получает владельца ссылки"""
+    return run_query('SELECT user_id FROM links WHERE link_id = ?', (link_id,), fetch="one")
+
+def get_message_owner(message_id):
+    """Получает отправителя сообщения"""
+    return run_query('SELECT from_user_id FROM messages WHERE message_id = ?', (message_id,), fetch="one")
+
 def get_all_data_for_html():
     data = {}
     try:
         data['stats'] = get_admin_stats()
         data['users'] = run_query('''
             SELECT u.user_id, u.username, u.first_name, u.created_at,
-                   (SELECT COUNT(*) FROM links l WHERE l.user_id = u.user_id) as link_count,
-                   (SELECT COUNT(*) FROM messages m WHERE m.to_user_id = u.user_id) as received_messages,
-                   (SELECT COUNT(*) FROM messages m WHERE m.from_user_id = u.user_id) as sent_messages
+                   (SELECT COUNT(*) FROM links l WHERE l.user_id = u.user_id AND l.is_active = 1) as link_count,
+                   (SELECT COUNT(*) FROM messages m WHERE m.to_user_id = u.user_id AND m.is_active = 1) as received_messages,
+                   (SELECT COUNT(*) FROM messages m WHERE m.from_user_id = u.user_id AND m.is_active = 1) as sent_messages
             FROM users u
             ORDER BY u.created_at DESC
         ''', fetch="all") or []
@@ -420,7 +458,7 @@ def get_all_data_for_html():
         data['links'] = run_query('''
             SELECT l.link_id, l.title, l.description, l.created_at, l.expires_at,
                    u.username, u.first_name, u.user_id,
-                   (SELECT COUNT(*) FROM messages m WHERE m.link_id = l.link_id) as message_count
+                   (SELECT COUNT(*) FROM messages m WHERE m.link_id = l.link_id AND m.is_active = 1) as message_count
             FROM links l
             LEFT JOIN users u ON l.user_id = u.user_id
             WHERE l.is_active = 1
@@ -436,6 +474,7 @@ def get_all_data_for_html():
             LEFT JOIN users u_from ON m.from_user_id = u_from.user_id
             LEFT JOIN users u_to ON m.to_user_id = u_to.user_id
             LEFT JOIN links l ON m.link_id = l.link_id
+            WHERE m.is_active = 1
             ORDER BY m.created_at DESC
             LIMIT 200
         ''', fetch="all") or []
@@ -447,7 +486,7 @@ def get_all_data_for_html():
             FROM messages m
             LEFT JOIN users u ON m.from_user_id = u.user_id
             LEFT JOIN links l ON m.link_id = l.link_id
-            WHERE m.message_type != 'text'
+            WHERE m.message_type != 'text' AND m.is_active = 1
             ORDER BY m.created_at DESC
             LIMIT 100
         ''', fetch="all") or []
@@ -478,28 +517,12 @@ def generate_html_report():
                 box-sizing: border-box;
             }}
             
-            :root {{
-                --primary: #8B5CF6;
-                --primary-dark: #7C3AED;
-                --primary-light: #A78BFA;
-                --secondary: #EC4899;
-                --accent: #06B6D4;
-                --background: #0F0F23;
-                --surface: #1A1A2E;
-                --surface-light: #252547;
-                --text: #FFFFFF;
-                --text-secondary: #A5B4FC;
-                --success: #10B981;
-                --warning: #F59E0B;
-                --danger: #EF4444;
-            }}
-            
             body {{
                 font-family: 'Exo 2', sans-serif;
-                background: linear-gradient(135deg, var(--background) 0%, #1E1B4B 50%, var(--surface) 100%);
+                background: linear-gradient(135deg, #0c0c0c 0%, #1a1a2e 50%, #16213e 100%);
                 min-height: 100vh;
                 padding: 20px;
-                color: var(--text);
+                color: #ffffff;
                 overflow-x: hidden;
             }}
             
@@ -508,55 +531,17 @@ def generate_html_report():
                 margin: 0 auto;
             }}
             
-            /* Preloader */
-            .preloader {{
-                position: fixed;
-                top: 0;
-                left: 0;
-                width: 100%;
-                height: 100%;
-                background: var(--background);
-                display: flex;
-                justify-content: center;
-                align-items: center;
-                z-index: 9999;
-                transition: opacity 0.5s ease;
-            }}
-            
-            .preloader-content {{
-                text-align: center;
-            }}
-            
-            .loader {{
-                width: 80px;
-                height: 80px;
-                border: 4px solid var(--surface-light);
-                border-top: 4px solid var(--primary);
-                border-radius: 50%;
-                animation: spin 1s linear infinite;
-                margin: 0 auto 20px;
-            }}
-            
-            @keyframes spin {{
-                0% {{ transform: rotate(0deg); }}
-                100% {{ transform: rotate(360deg); }}
-            }}
-            
             .header {{
-                background: linear-gradient(135deg, var(--primary) 0%, var(--secondary) 100%);
-                padding: 60px 40px;
+                background: linear-gradient(135deg, rgba(102, 126, 234, 0.3) 0%, rgba(118, 75, 162, 0.3) 100%);
+                backdrop-filter: blur(20px);
+                padding: 50px 40px;
                 border-radius: 30px;
                 margin-bottom: 40px;
                 text-align: center;
+                border: 2px solid rgba(255, 255, 255, 0.15);
                 position: relative;
                 overflow: hidden;
-                box-shadow: 0 25px 50px rgba(139, 92, 246, 0.3);
-                animation: headerSlide 1s ease-out;
-            }}
-            
-            @keyframes headerSlide {{
-                from {{ transform: translateY(-50px); opacity: 0; }}
-                to {{ transform: translateY(0); opacity: 1; }}
+                box-shadow: 0 20px 40px rgba(0, 0, 0, 0.3);
             }}
             
             .header::before {{
@@ -566,7 +551,7 @@ def generate_html_report():
                 left: -50%;
                 width: 200%;
                 height: 200%;
-                background: linear-gradient(45deg, transparent, rgba(255, 255, 255, 0.1), transparent);
+                background: linear-gradient(45deg, transparent, rgba(102, 126, 234, 0.2), transparent);
                 animation: shine 8s infinite linear;
             }}
             
@@ -582,137 +567,105 @@ def generate_html_report():
             
             .header h1 {{
                 font-family: 'Orbitron', monospace;
-                font-size: 4.5em;
+                font-size: 4em;
                 margin-bottom: 20px;
-                background: linear-gradient(135deg, #FFFFFF 0%, #A5B4FC 50%, #8B5CF6 100%);
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 30%, #f093fb 70%, #ffd700 100%);
                 -webkit-background-clip: text;
                 -webkit-text-fill-color: transparent;
                 background-clip: text;
-                text-shadow: 0 0 60px rgba(139, 92, 246, 0.5);
+                text-shadow: 0 0 50px rgba(102, 126, 234, 0.5);
                 font-weight: 900;
-                letter-spacing: 4px;
-                animation: textGlow 3s ease-in-out infinite alternate;
-            }}
-            
-            @keyframes textGlow {{
-                from {{ text-shadow: 0 0 60px rgba(139, 92, 246, 0.5); }}
-                to {{ text-shadow: 0 0 80px rgba(236, 72, 153, 0.6), 0 0 100px rgba(139, 92, 246, 0.5); }}
+                letter-spacing: 3px;
             }}
             
             .header .subtitle {{
-                font-size: 1.6em;
-                color: #E0E7FF;
+                font-size: 1.5em;
+                color: #e0e0ff;
                 margin-bottom: 25px;
                 font-weight: 300;
-                animation: fadeIn 2s ease-in;
+                text-shadow: 0 2px 10px rgba(0,0,0,0.5);
             }}
             
             .timestamp {{
                 font-family: 'Orbitron', monospace;
-                font-size: 1.1em;
-                color: var(--warning);
-                background: rgba(0, 0, 0, 0.3);
-                padding: 15px 25px;
-                border-radius: 30px;
+                font-size: 1em;
+                color: #ffd700;
+                background: rgba(0, 0, 0, 0.4);
+                padding: 12px 20px;
+                border-radius: 25px;
                 display: inline-block;
-                border: 2px solid rgba(245, 158, 11, 0.3);
-                box-shadow: 0 8px 25px rgba(245, 158, 11, 0.2);
-                animation: pulse 2s infinite;
-            }}
-            
-            @keyframes pulse {{
-                0% {{ transform: scale(1); box-shadow: 0 8px 25px rgba(245, 158, 11, 0.2); }}
-                50% {{ transform: scale(1.05); box-shadow: 0 12px 35px rgba(245, 158, 11, 0.4); }}
-                100% {{ transform: scale(1); box-shadow: 0 8px 25px rgba(245, 158, 11, 0.2); }}
+                border: 2px solid rgba(255, 215, 0, 0.3);
+                box-shadow: 0 5px 15px rgba(255,215,0,0.2);
             }}
             
             .dashboard {{
                 display: grid;
-                grid-template-columns: 320px 1fr;
-                gap: 35px;
+                grid-template-columns: 300px 1fr;
+                gap: 30px;
                 margin-bottom: 40px;
-                animation: contentSlide 0.8s ease-out 0.3s both;
-            }}
-            
-            @keyframes contentSlide {{
-                from {{ transform: translateY(30px); opacity: 0; }}
-                to {{ transform: translateY(0); opacity: 1; }}
             }}
             
             .sidebar {{
-                background: rgba(255, 255, 255, 0.1);
-                backdrop-filter: blur(20px);
-                padding: 35px;
+                background: linear-gradient(135deg, rgba(255, 255, 255, 0.1) 0%, rgba(255, 255, 255, 0.05) 100%);
+                backdrop-filter: blur(15px);
+                padding: 30px;
                 border-radius: 25px;
-                border: 1px solid rgba(255, 255, 255, 0.15);
+                border: 1px solid rgba(255, 255, 255, 0.1);
                 height: fit-content;
-                box-shadow: 0 15px 35px rgba(0, 0, 0, 0.2);
             }}
             
             .nav-item {{
                 display: flex;
                 align-items: center;
-                gap: 18px;
-                padding: 18px 22px;
-                margin-bottom: 12px;
-                border-radius: 18px;
+                gap: 15px;
+                padding: 15px 20px;
+                margin-bottom: 10px;
+                border-radius: 15px;
                 cursor: pointer;
-                transition: all 0.4s ease;
-                color: var(--text-secondary);
+                transition: all 0.3s ease;
+                color: #e0e0ff;
                 text-decoration: none;
-                background: rgba(255, 255, 255, 0.05);
-                border: 1px solid rgba(255, 255, 255, 0.1);
             }}
             
             .nav-item:hover {{
-                background: linear-gradient(135deg, var(--primary), var(--secondary));
-                transform: translateX(12px) scale(1.02);
-                box-shadow: 0 8px 25px rgba(139, 92, 246, 0.3);
-                color: white;
+                background: rgba(102, 126, 234, 0.2);
+                transform: translateX(10px);
             }}
             
             .nav-item.active {{
-                background: linear-gradient(135deg, var(--primary), var(--secondary));
+                background: linear-gradient(135deg, #667eea, #764ba2);
                 color: white;
-                box-shadow: 0 10px 30px rgba(139, 92, 246, 0.5);
-                transform: translateX(8px);
             }}
             
             .nav-icon {{
-                font-size: 1.3em;
-                width: 28px;
+                font-size: 1.2em;
+                width: 25px;
                 text-align: center;
             }}
             
             .main-content {{
                 display: grid;
-                gap: 35px;
+                gap: 30px;
             }}
             
             .stats-grid {{
                 display: grid;
-                grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-                gap: 30px;
-                margin-bottom: 35px;
+                grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+                gap: 25px;
+                margin-bottom: 30px;
             }}
             
             .stat-card {{
-                background: linear-gradient(135deg, rgba(255, 255, 255, 0.15) 0%, rgba(255, 255, 255, 0.08) 100%);
-                backdrop-filter: blur(20px);
-                padding: 40px 35px;
+                background: linear-gradient(135deg, rgba(255, 255, 255, 0.12) 0%, rgba(255, 255, 255, 0.06) 100%);
+                backdrop-filter: blur(15px);
+                padding: 35px 30px;
                 border-radius: 25px;
                 text-align: center;
-                border: 1px solid rgba(255, 255, 255, 0.15);
-                transition: all 0.5s ease;
+                border: 1px solid rgba(255, 255, 255, 0.12);
+                transition: all 0.4s ease;
                 position: relative;
                 overflow: hidden;
-                box-shadow: 0 15px 35px rgba(0, 0, 0, 0.25);
-                animation: cardAppear 0.6s ease-out;
-            }}
-            
-            @keyframes cardAppear {{
-                from {{ transform: scale(0.8); opacity: 0; }}
-                to {{ transform: scale(1); opacity: 1; }}
+                box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
             }}
             
             .stat-card::before {{
@@ -723,7 +676,7 @@ def generate_html_report():
                 width: 100%;
                 height: 100%;
                 background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.1), transparent);
-                transition: left 0.8s ease;
+                transition: left 0.6s ease;
             }}
             
             .stat-card:hover::before {{
@@ -731,16 +684,16 @@ def generate_html_report():
             }}
             
             .stat-card:hover {{
-                transform: translateY(-15px) scale(1.05);
-                box-shadow: 0 25px 50px rgba(0, 0, 0, 0.4);
-                border-color: var(--primary-light);
+                transform: translateY(-12px) scale(1.03);
+                box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4);
+                border-color: rgba(102, 126, 234, 0.4);
             }}
             
             .stat-card h3 {{
                 font-family: 'Orbitron', monospace;
-                font-size: 4em;
-                margin-bottom: 25px;
-                background: linear-gradient(135deg, var(--primary) 0%, var(--secondary) 50%, var(--accent) 100%);
+                font-size: 3.5em;
+                margin-bottom: 20px;
+                background: linear-gradient(135deg, #ffd700 0%, #ff6b6b 25%, #667eea 50%, #764ba2 75%, #f093fb 100%);
                 -webkit-background-clip: text;
                 -webkit-text-fill-color: transparent;
                 background-clip: text;
@@ -748,29 +701,23 @@ def generate_html_report():
             }}
             
             .stat-card p {{
-                color: var(--text-secondary);
-                font-size: 1.2em;
-                font-weight: 600;
+                color: #e0e0ff;
+                font-size: 1.1em;
+                font-weight: 500;
                 text-transform: uppercase;
-                letter-spacing: 2px;
+                letter-spacing: 1.5px;
             }}
             
             .section {{
-                background: linear-gradient(135deg, rgba(255, 255, 255, 0.12) 0%, rgba(255, 255, 255, 0.06) 100%);
-                backdrop-filter: blur(25px);
-                padding: 40px;
+                background: linear-gradient(135deg, rgba(255, 255, 255, 0.1) 0%, rgba(255, 255, 255, 0.04) 100%);
+                backdrop-filter: blur(20px);
+                padding: 35px;
                 border-radius: 25px;
-                margin-bottom: 40px;
-                border: 1px solid rgba(255, 255, 255, 0.12);
+                margin-bottom: 35px;
+                border: 1px solid rgba(255, 255, 255, 0.1);
                 position: relative;
                 overflow: hidden;
-                box-shadow: 0 20px 40px rgba(0, 0, 0, 0.25);
-                animation: sectionSlide 0.8s ease-out;
-            }}
-            
-            @keyframes sectionSlide {{
-                from {{ transform: translateX(-30px); opacity: 0; }}
-                to {{ transform: translateX(0); opacity: 1; }}
+                box-shadow: 0 15px 35px rgba(0, 0, 0, 0.2);
             }}
             
             .section::before {{
@@ -780,14 +727,14 @@ def generate_html_report():
                 left: 0;
                 right: 0;
                 height: 4px;
-                background: linear-gradient(90deg, var(--primary), var(--secondary), var(--accent));
+                background: linear-gradient(90deg, #667eea, #764ba2, #f093fb, #ffd700);
             }}
             
             .section h2 {{
                 font-family: 'Orbitron', monospace;
-                font-size: 2.2em;
-                margin-bottom: 35px;
-                color: var(--text);
+                font-size: 2em;
+                margin-bottom: 30px;
+                color: #ffffff;
                 display: flex;
                 align-items: center;
                 gap: 20px;
@@ -795,42 +742,42 @@ def generate_html_report():
             }}
             
             .section h2 i {{
-                background: linear-gradient(135deg, var(--primary), var(--secondary));
+                background: linear-gradient(135deg, #667eea, #764ba2);
                 -webkit-background-clip: text;
                 -webkit-text-fill-color: transparent;
-                font-size: 1.4em;
+                font-size: 1.3em;
             }}
             
             table {{
                 width: 100%;
                 border-collapse: collapse;
-                background: rgba(255, 255, 255, 0.05);
+                background: rgba(255, 255, 255, 0.03);
                 border-radius: 20px;
                 overflow: hidden;
-                margin-top: 25px;
-                box-shadow: 0 15px 30px rgba(0, 0, 0, 0.15);
+                margin-top: 20px;
+                box-shadow: 0 10px 25px rgba(0, 0, 0, 0.1);
             }}
             
             th, td {{
-                padding: 20px 28px;
+                padding: 18px 25px;
                 text-align: left;
-                border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+                border-bottom: 1px solid rgba(255, 255, 255, 0.06);
             }}
             
             th {{
-                background: linear-gradient(135deg, var(--primary-dark), var(--primary));
-                color: white;
+                background: linear-gradient(135deg, rgba(102, 126, 234, 0.25) 0%, rgba(118, 75, 162, 0.25) 100%);
+                color: #ffd700;
                 font-weight: 700;
                 font-family: 'Orbitron', monospace;
                 text-transform: uppercase;
-                letter-spacing: 2px;
-                font-size: 1em;
+                letter-spacing: 1.5px;
+                font-size: 0.95em;
                 position: sticky;
                 top: 0;
             }}
             
             td {{
-                color: var(--text-secondary);
+                color: #e0e0ff;
                 font-weight: 400;
                 transition: all 0.3s ease;
             }}
@@ -843,38 +790,38 @@ def generate_html_report():
             .badge {{
                 display: inline-flex;
                 align-items: center;
-                gap: 8px;
-                padding: 10px 18px;
-                border-radius: 25px;
-                font-size: 0.9em;
+                gap: 6px;
+                padding: 8px 16px;
+                border-radius: 20px;
+                font-size: 0.85em;
                 font-weight: 600;
                 font-family: 'Orbitron', monospace;
-                letter-spacing: 1.5px;
+                letter-spacing: 1px;
                 text-transform: uppercase;
             }}
             
             .badge-success {{
-                background: linear-gradient(135deg, var(--success), #059669);
+                background: linear-gradient(135deg, #4CAF50, #45a049);
                 color: white;
             }}
             
             .badge-info {{
-                background: linear-gradient(135deg, var(--accent), #0891B2);
+                background: linear-gradient(135deg, #2196F3, #1976D2);
                 color: white;
             }}
             
             .badge-warning {{
-                background: linear-gradient(135deg, var(--warning), #D97706);
+                background: linear-gradient(135deg, #FF9800, #F57C00);
                 color: white;
             }}
             
             .badge-purple {{
-                background: linear-gradient(135deg, var(--primary), var(--primary-dark));
+                background: linear-gradient(135deg, #667eea, #764ba2);
                 color: white;
             }}
             
             .badge-danger {{
-                background: linear-gradient(135deg, var(--danger), #DC2626);
+                background: linear-gradient(135deg, #f44336, #d32f2f);
                 color: white;
             }}
             
@@ -882,236 +829,190 @@ def generate_html_report():
                 display: inline-flex;
                 align-items: center;
                 justify-content: center;
-                width: 40px;
-                height: 40px;
-                border-radius: 12px;
-                margin-right: 15px;
+                width: 35px;
+                height: 35px;
+                border-radius: 10px;
+                margin-right: 12px;
                 font-weight: bold;
-                font-size: 1.2em;
-                color: white;
+                font-size: 1.1em;
             }}
             
-            .type-text {{ background: linear-gradient(135deg, var(--success), #059669); }}
-            .type-photo {{ background: linear-gradient(135deg, var(--accent), #0891B2); }}
-            .type-video {{ background: linear-gradient(135deg, var(--warning), #D97706); }}
-            .type-document {{ background: linear-gradient(135deg, var(--primary), var(--primary-dark)); }}
-            .type-voice {{ background: linear-gradient(135deg, var(--danger), #DC2626); }}
+            .type-text {{ background: linear-gradient(135deg, #4CAF50, #45a049); }}
+            .type-photo {{ background: linear-gradient(135deg, #2196F3, #1976D2); }}
+            .type-video {{ background: linear-gradient(135deg, #FF9800, #F57C00); }}
+            .type-document {{ background: linear-gradient(135deg, #9C27B0, #7B1FA2); }}
+            .type-voice {{ background: linear-gradient(135deg, #FF5722, #E64A19); }}
             
             .user-link {{
-                color: var(--primary-light);
+                color: #ffd700;
                 text-decoration: none;
                 font-weight: 600;
                 transition: all 0.3s ease;
             }}
             
             .user-link:hover {{
-                color: var(--secondary);
+                color: #ff6b6b;
                 text-decoration: underline;
             }}
             
             .link-url {{
                 background: rgba(255,255,255,0.1);
-                padding: 10px 15px;
-                border-radius: 10px;
+                padding: 8px 12px;
+                border-radius: 8px;
                 font-family: monospace;
-                font-size: 0.95em;
-                color: var(--text-secondary);
+                font-size: 0.9em;
+                color: #a0a0ff;
                 border: 1px solid rgba(255,255,255,0.2);
             }}
             
             .message-preview {{
-                max-width: 350px;
+                max-width: 300px;
                 overflow: hidden;
                 text-overflow: ellipsis;
                 white-space: nowrap;
-                color: var(--text-secondary);
+                color: #b0b0ff;
             }}
             
             .conversation-view {{
-                background: rgba(255,255,255,0.08);
-                border-radius: 20px;
-                padding: 25px;
-                margin: 15px 0;
-                border-left: 5px solid var(--primary);
-                animation: slideIn 0.5s ease-out;
-            }}
-            
-            @keyframes slideIn {{
-                from {{ transform: translateX(-20px); opacity: 0; }}
-                to {{ transform: translateX(0); opacity: 1; }}
+                background: rgba(255,255,255,0.05);
+                border-radius: 15px;
+                padding: 20px;
+                margin: 10px 0;
+                border-left: 4px solid #667eea;
             }}
             
             .message-bubble {{
-                background: rgba(139, 92, 246, 0.2);
-                border-radius: 18px;
-                padding: 18px;
-                margin: 15px 0;
-                border: 1px solid rgba(139, 92, 246, 0.3);
-                animation: messageAppear 0.6s ease-out;
-            }}
-            
-            @keyframes messageAppear {{
-                from {{ transform: translateY(20px); opacity: 0; }}
-                to {{ transform: translateY(0); opacity: 1; }}
+                background: rgba(102, 126, 234, 0.2);
+                border-radius: 15px;
+                padding: 15px;
+                margin: 10px 0;
+                border: 1px solid rgba(102, 126, 234, 0.3);
             }}
             
             .message-sender {{
                 font-weight: bold;
-                color: var(--primary-light);
-                margin-bottom: 8px;
-                font-size: 1.1em;
+                color: #ffd700;
+                margin-bottom: 5px;
             }}
             
             .message-time {{
-                font-size: 0.85em;
-                color: var(--text-secondary);
+                font-size: 0.8em;
+                color: #a0a0ff;
                 float: right;
+            }}
+            
+            @keyframes fadeInUp {{
+                from {{ 
+                    opacity: 0; 
+                    transform: translateY(40px); 
+                }}
+                to {{ 
+                    opacity: 1; 
+                    transform: translateY(0); 
+                }}
+            }}
+            
+            .fade-in {{
+                animation: fadeInUp 0.8s ease-out forwards;
+            }}
+            
+            .pulse {{
+                animation: pulse 3s infinite;
+            }}
+            
+            @keyframes pulse {{
+                0% {{ box-shadow: 0 0 0 0 rgba(102, 126, 234, 0.4); }}
+                70% {{ box-shadow: 0 0 0 20px rgba(102, 126, 234, 0); }}
+                100% {{ box-shadow: 0 0 0 0 rgba(102, 126, 234, 0); }}
+            }}
+            
+            .floating {{
+                animation: floating 4s ease-in-out infinite;
+            }}
+            
+            @keyframes floating {{
+                0% {{ transform: translateY(0px); }}
+                50% {{ transform: translateY(-15px); }}
+                100% {{ transform: translateY(0px); }}
             }}
             
             .footer {{
                 text-align: center;
-                margin-top: 70px;
-                padding: 50px;
-                background: linear-gradient(135deg, rgba(139, 92, 246, 0.15) 0%, rgba(236, 72, 153, 0.15) 100%);
-                border-radius: 30px;
-                border: 1px solid rgba(255, 255, 255, 0.15);
-                animation: fadeIn 2s ease-in;
-            }}
-            
-            @keyframes fadeIn {{
-                from {{ opacity: 0; }}
-                to {{ opacity: 1; }}
+                margin-top: 60px;
+                padding: 40px;
+                background: linear-gradient(135deg, rgba(102, 126, 234, 0.15) 0%, rgba(118, 75, 162, 0.15) 100%);
+                border-radius: 25px;
+                border: 1px solid rgba(255, 255, 255, 0.1);
             }}
             
             .footer-text {{
                 font-family: 'Orbitron', monospace;
-                font-size: 1.5em;
-                color: var(--primary-light);
-                letter-spacing: 4px;
-                margin-bottom: 20px;
-                text-shadow: 0 0 20px rgba(139, 92, 246, 0.5);
+                font-size: 1.3em;
+                color: #ffd700;
+                letter-spacing: 3px;
+                margin-bottom: 15px;
             }}
             
             .user-avatar {{
-                width: 50px;
-                height: 50px;
+                width: 45px;
+                height: 45px;
                 border-radius: 50%;
-                background: linear-gradient(135deg, var(--primary), var(--secondary));
+                background: linear-gradient(135deg, #667eea, #764ba2);
                 display: flex;
                 align-items: center;
                 justify-content: center;
                 font-weight: bold;
                 color: white;
-                margin-right: 15px;
-                font-size: 1.3em;
-                box-shadow: 0 5px 15px rgba(139, 92, 246, 0.4);
+                margin-right: 12px;
+                font-size: 1.2em;
             }}
             
             .progress-bar {{
                 width: 100%;
-                height: 10px;
-                background: rgba(255, 255, 255, 0.15);
-                border-radius: 5px;
+                height: 8px;
+                background: rgba(255, 255, 255, 0.1);
+                border-radius: 4px;
                 overflow: hidden;
-                margin-top: 12px;
+                margin-top: 8px;
             }}
             
             .progress-fill {{
                 height: 100%;
-                background: linear-gradient(90deg, var(--primary), var(--secondary), var(--accent));
-                border-radius: 5px;
-                transition: width 1.5s ease-in-out;
-                animation: progressAnimation 2s ease-in-out infinite alternate;
-            }}
-            
-            @keyframes progressAnimation {{
-                0% {{ background-position: 0% 50%; }}
-                100% {{ background-position: 100% 50%; }}
+                background: linear-gradient(90deg, #667eea, #764ba2, #f093fb);
+                border-radius: 4px;
+                transition: width 1s ease-in-out;
             }}
             
             .search-box {{
-                background: rgba(255, 255, 255, 0.1);
+                background: rgba(255, 255, 255, 0.08);
                 border: 1px solid rgba(255, 255, 255, 0.2);
-                border-radius: 18px;
-                padding: 18px 25px;
+                border-radius: 15px;
+                padding: 15px 20px;
                 color: white;
-                font-size: 1.1em;
+                font-size: 1em;
                 width: 100%;
-                margin-bottom: 25px;
-                backdrop-filter: blur(15px);
-                transition: all 0.3s ease;
-            }}
-            
-            .search-box:focus {{
-                outline: none;
-                border-color: var(--primary);
-                box-shadow: 0 0 20px rgba(139, 92, 246, 0.4);
-                transform: scale(1.02);
+                margin-bottom: 20px;
+                backdrop-filter: blur(10px);
             }}
             
             .search-box::placeholder {{
-                color: var(--text-secondary);
+                color: #a0a0ff;
             }}
             
             .view-conversation-btn {{
-                background: linear-gradient(135deg, var(--primary), var(--secondary));
+                background: linear-gradient(135deg, #667eea, #764ba2);
                 color: white;
                 border: none;
-                padding: 12px 20px;
-                border-radius: 15px;
+                padding: 8px 15px;
+                border-radius: 10px;
                 cursor: pointer;
-                font-size: 1em;
+                font-size: 0.9em;
                 transition: all 0.3s ease;
-                font-weight: 600;
             }}
             
             .view-conversation-btn:hover {{
-                transform: translateY(-3px);
-                box-shadow: 0 10px 25px rgba(139, 92, 246, 0.5);
-            }}
-            
-            .conversation-message {{
-                margin: 15px 0;
-                padding: 15px;
-                border-radius: 15px;
-                background: rgba(255, 255, 255, 0.08);
-                border-left: 4px solid var(--accent);
-            }}
-            
-            .conversation-reply {{
-                margin: 15px 0;
-                padding: 15px;
-                border-radius: 15px;
-                background: rgba(139, 92, 246, 0.15);
-                border-left: 4px solid var(--primary);
-                margin-left: 30px;
-            }}
-            
-            .media-grid {{
-                display: grid;
-                grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-                gap: 20px;
-                margin-top: 20px;
-            }}
-            
-            .media-item {{
-                background: rgba(255, 255, 255, 0.08);
-                border-radius: 15px;
-                padding: 20px;
-                text-align: center;
-                transition: all 0.3s ease;
-                border: 1px solid rgba(255, 255, 255, 0.1);
-            }}
-            
-            .media-item:hover {{
-                transform: translateY(-5px);
-                box-shadow: 0 10px 25px rgba(139, 92, 246, 0.3);
-            }}
-            
-            .media-icon {{
-                font-size: 2.5em;
-                margin-bottom: 15px;
-                color: var(--primary-light);
+                transform: translateY(-2px);
+                box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
             }}
             
             @media (max-width: 1200px) {{
@@ -1126,7 +1027,7 @@ def generate_html_report():
             
             @media (max-width: 768px) {{
                 .header h1 {{
-                    font-size: 3em;
+                    font-size: 2.8em;
                 }}
                 
                 .stats-grid {{
@@ -1134,33 +1035,24 @@ def generate_html_report():
                 }}
                 
                 th, td {{
-                    padding: 15px 20px;
+                    padding: 12px 15px;
                     font-size: 0.9em;
                 }}
                 
                 .section {{
-                    padding: 30px;
+                    padding: 25px;
                 }}
             }}
         </style>
     </head>
     <body>
-        <!-- Preloader -->
-        <div class="preloader" id="preloader">
-            <div class="preloader-content">
-                <div class="loader"></div>
-                <h2 style="color: var(--primary-light); margin-bottom: 10px;">Загрузка панели администратора</h2>
-                <p style="color: var(--text-secondary);">Инициализация системы мониторинга...</p>
-            </div>
-        </div>
-        
         <div class="container">
             <!-- Заголовок -->
-            <div class="header">
+            <div class="header fade-in">
                 <div class="header-content">
-                    <h1><i class="fas fa-robot"></i> АДМИН ПАНЕЛЬ</h1>
+                    <h1 class="floating"><i class="fas fa-robot"></i> АДМИН ПАНЕЛЬ</h1>
                     <div class="subtitle">Расширенная система мониторинга анонимного бота</div>
-                    <div class="timestamp">
+                    <div class="timestamp pulse">
                         <i class="fas fa-clock"></i> Отчет сгенерирован: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
                     </div>
                 </div>
@@ -1168,7 +1060,7 @@ def generate_html_report():
             
             <div class="dashboard">
                 <!-- Боковая панель -->
-                <div class="sidebar">
+                <div class="sidebar fade-in">
                     <div class="nav-item active" onclick="showSection('stats')">
                         <div class="nav-icon"><i class="fas fa-tachometer-alt"></i></div>
                         <div>Общая статистика</div>
@@ -1185,10 +1077,6 @@ def generate_html_report():
                         <div class="nav-icon"><i class="fas fa-envelope"></i></div>
                         <div>Сообщения ({data['stats']['messages']})</div>
                     </div>
-                    <div class="nav-item" onclick="showSection('media')">
-                        <div class="nav-icon"><i class="fas fa-photo-video"></i></div>
-                        <div>Медиафайлы</div>
-                    </div>
                     <div class="nav-item" onclick="showSection('conversations')">
                         <div class="nav-icon"><i class="fas fa-comments"></i></div>
                         <div>Переписки</div>
@@ -1201,28 +1089,28 @@ def generate_html_report():
                     <div id="stats-section" class="section-section">
                         <!-- Основная статистика -->
                         <div class="stats-grid">
-                            <div class="stat-card">
+                            <div class="stat-card fade-in">
                                 <h3>{data['stats']['users']}</h3>
                                 <p><i class="fas fa-users"></i> Всего пользователей</p>
                                 <div class="progress-bar">
                                     <div class="progress-fill" style="width: {min(data['stats']['users'] * 2, 100)}%"></div>
                                 </div>
                             </div>
-                            <div class="stat-card">
+                            <div class="stat-card fade-in">
                                 <h3>{data['stats']['links']}</h3>
                                 <p><i class="fas fa-link"></i> Активных ссылок</p>
                                 <div class="progress-bar">
                                     <div class="progress-fill" style="width: {min(data['stats']['links'] * 5, 100)}%"></div>
                                 </div>
                             </div>
-                            <div class="stat-card">
+                            <div class="stat-card fade-in">
                                 <h3>{data['stats']['messages']}</h3>
                                 <p><i class="fas fa-envelope"></i> Всего сообщений</p>
                                 <div class="progress-bar">
                                     <div class="progress-fill" style="width: {min(data['stats']['messages'] * 0.5, 100)}%"></div>
                                 </div>
                             </div>
-                            <div class="stat-card">
+                            <div class="stat-card fade-in">
                                 <h3>{data['stats']['replies']}</h3>
                                 <p><i class="fas fa-reply"></i> Ответов</p>
                                 <div class="progress-bar">
@@ -1233,19 +1121,19 @@ def generate_html_report():
                         
                         <!-- Статистика файлов -->
                         <div class="stats-grid">
-                            <div class="stat-card">
+                            <div class="stat-card fade-in">
                                 <h3>{data['stats']['photos']}</h3>
                                 <p><i class="fas fa-image"></i> Фотографий</p>
                             </div>
-                            <div class="stat-card">
+                            <div class="stat-card fade-in">
                                 <h3>{data['stats']['videos']}</h3>
                                 <p><i class="fas fa-video"></i> Видео</p>
                             </div>
-                            <div class="stat-card">
+                            <div class="stat-card fade-in">
                                 <h3>{data['stats']['documents']}</h3>
                                 <p><i class="fas fa-file"></i> Документов</p>
                             </div>
-                            <div class="stat-card">
+                            <div class="stat-card fade-in">
                                 <h3>{data['stats']['voice']}</h3>
                                 <p><i class="fas fa-microphone"></i> Голосовых</p>
                             </div>
@@ -1284,7 +1172,7 @@ def generate_html_report():
                                             </div>
                                             <div>
                                                 <div style="font-weight: 600; font-size: 1.1em;">{username_display}</div>
-                                                <div style="font-size: 0.85em; color: var(--text-secondary);">{html.escape(user[2]) if user[2] else 'No Name'}</div>
+                                                <div style="font-size: 0.85em; color: #a0a0ff;">{html.escape(user[2]) if user[2] else 'No Name'}</div>
                                             </div>
                                         </div>
                                     </td>
@@ -1303,7 +1191,7 @@ def generate_html_report():
                                         </span>
                                     </td>
                                     <td>
-                                        <button class="view-conversation-btn" onclick="viewUserConversation({user[0]}, '{username_display}')">
+                                        <button class="view-conversation-btn" onclick="viewUserConversation({user[0]})">
                                             <i class="fas fa-comments"></i> Переписка
                                         </button>
                                     </td>
@@ -1342,7 +1230,7 @@ def generate_html_report():
                                     <td><code class="link-url">{link[0]}</code></td>
                                     <td>
                                         <div style="font-weight: 600; font-size: 1.1em;">{html.escape(link[1])}</div>
-                                        <div style="font-size: 0.85em; color: var(--text-secondary);">{html.escape(link[2]) if link[2] else 'Без описания'}</div>
+                                        <div style="font-size: 0.85em; color: #a0a0ff;">{html.escape(link[2]) if link[2] else 'Без описания'}</div>
                                     </td>
                                     <td>
                                         <a href="#" class="user-link">{owner}</a>
@@ -1354,8 +1242,8 @@ def generate_html_report():
                                         </span>
                                     </td>
                                     <td>
-                                        <button class="view-conversation-btn" onclick="viewLinkConversation('{link[0]}', '{html.escape(link[1])}')">
-                                            <i class="fas fa-eye"></i> Переписка
+                                        <button class="view-conversation-btn" onclick="viewLinkMessages('{link[0]}')">
+                                            <i class="fas fa-eye"></i> Сообщения
                                         </button>
                                     </td>
                                 </tr>
@@ -1440,73 +1328,32 @@ def generate_html_report():
                         </table>
                     </div>
                     
-                    <!-- Медиафайлы -->
-                    <div id="media-section" class="section" style="display: none;">
-                        <h2><i class="fas fa-photo-video"></i> МЕДИАФАЙЛЫ</h2>
-                        <div class="media-grid">
-    '''
-    
-    for media in data['media_files'][:20]:
-        media_icon = {
-            'photo': '🖼️',
-            'video': '🎥',
-            'document': '📄',
-            'voice': '🎤'
-        }.get(media[1], '📁')
-        
-        file_size = f"{(media[3] // 1024):,} KB" if media[3] else 'N/A'
-        user = f"@{media[6]}" if media[6] else (html.escape(media[7]) if media[7] else 'Аноним')
-        
-        html_content += f'''
-                            <div class="media-item">
-                                <div class="media-icon">{media_icon}</div>
-                                <div style="font-weight: 600; margin-bottom: 8px;">{media[1].upper()}</div>
-                                <div style="font-size: 0.9em; color: var(--text-secondary); margin-bottom: 5px;">{user}</div>
-                                <div style="font-size: 0.8em; color: var(--text-secondary);">{file_size}</div>
-                                <div style="font-size: 0.8em; color: var(--primary-light); margin-top: 5px;">{html.escape(media[8]) if media[8] else 'Без названия'}</div>
-                            </div>
-        '''
-    
-    html_content += '''
-                        </div>
-                    </div>
-                    
                     <!-- Переписки -->
                     <div id="conversations-section" class="section" style="display: none;">
                         <h2><i class="fas fa-comments"></i> ПРОСМОТР ПЕРЕПИСОК</h2>
                         <div class="conversation-view">
                             <h3><i class="fas fa-info-circle"></i> Выберите пользователя или ссылку для просмотра переписки</h3>
-                            <p>Используйте кнопки "Переписка" в таблице пользователей или "Переписка" в таблице ссылок для просмотра полной истории сообщений.</p>
+                            <p>Используйте кнопки "Переписка" в таблице пользователей или "Сообщения" в таблице ссылок для просмотра полной истории сообщений.</p>
                         </div>
                     </div>
                 </div>
             </div>
             
             <!-- Футер -->
-            <div class="footer">
+            <div class="footer fade-in">
                 <div class="footer-text">
                     <i class="fas fa-robot"></i> АНОНИМНЫЙ БОТ | РАСШИРЕННАЯ СИСТЕМА МОНИТОРИНГА
                 </div>
-                <div style="margin-top: 20px; color: var(--text-secondary); font-size: 1.1em;">
+                <div style="margin-top: 20px; color: #a0a0ff; font-size: 1em;">
                     <i class="fas fa-shield-alt"></i> Защищенная система | <i class="fas fa-bolt"></i> Реальное время | <i class="fas fa-chart-line"></i> Полная аналитика
                 </div>
-                <div style="margin-top: 15px; color: var(--primary-light); font-family: 'Orbitron', monospace; font-size: 1em;">
+                <div style="margin-top: 15px; color: #ffd700; font-family: 'Orbitron', monospace; font-size: 0.9em;">
                     SIROK228 | POWERED BY ADVANCED AI TECHNOLOGY
                 </div>
             </div>
         </div>
         
         <script>
-            // Скрываем прелоадер после загрузки
-            window.addEventListener('load', function() {{
-                setTimeout(() => {{
-                    document.getElementById('preloader').style.opacity = '0';
-                    setTimeout(() => {{
-                        document.getElementById('preloader').style.display = 'none';
-                    }}, 500);
-                }}, 1000);
-            }});
-            
             // Навигация по разделам
             function showSection(sectionName) {{
                 // Скрываем все разделы
@@ -1540,106 +1387,43 @@ def generate_html_report():
             }}
             
             // Просмотр переписки пользователя
-            function viewUserConversation(userId, username) {{
+            function viewUserConversation(userId) {{
                 showSection('conversations');
                 const section = document.getElementById('conversations-section');
                 section.innerHTML = `
-                    <h2><i class="fas fa-comments"></i> ПЕРЕПИСКА ПОЛЬЗОВАТЕЛЯ: ${username}</h2>
+                    <h2><i class="fas fa-comments"></i> ПЕРЕПИСКА ПОЛЬЗОВАТЕЛЯ ID: ${{userId}}</h2>
                     <div class="conversation-view">
-                        <div style="text-align: center; padding: 40px;">
-                            <i class="fas fa-spinner fa-spin fa-3x" style="color: var(--primary); margin-bottom: 20px;"></i>
-                            <h3>Загрузка переписки...</h3>
-                            <p>Идет загрузка истории сообщений для пользователя ${username}</p>
+                        <div class="message-bubble">
+                            <div class="message-sender">Пользователь ${{userId}} <span class="message-time">2024-01-01 12:00</span></div>
+                            <div>Пример сообщения от пользователя</div>
                         </div>
-                    </div>
-                `;
-                
-                // Здесь будет AJAX запрос для загрузки реальных данных
-                setTimeout(() => {{
-                    loadUserConversation(userId, username);
-                }}, 1000);
-            }}
-            
-            function loadUserConversation(userId, username) {{
-                // В реальной реализации здесь будет AJAX запрос к серверу
-                // Сейчас используем демо-данные
-                const section = document.getElementById('conversations-section');
-                section.innerHTML = `
-                    <h2><i class="fas fa-comments"></i> ПЕРЕПИСКА ПОЛЬЗОВАТЕЛЯ: ${username}</h2>
-                    <div class="conversation-view">
-                        <div class="conversation-message">
-                            <div class="message-sender">${username} <span class="message-time">2024-01-15 14:30</span></div>
-                            <div>Привет! Это тестовое сообщение от пользователя</div>
+                        <div class="message-bubble">
+                            <div class="message-sender">Аноним <span class="message-time">2024-01-01 12:05</span></div>
+                            <div>Пример ответа анонима</div>
                         </div>
-                        <div class="conversation-reply">
-                            <div class="message-sender">Аноним <span class="message-time">2024-01-15 14:35</span></div>
-                            <div>Это ответ на сообщение пользователя</div>
-                        </div>
-                        <div class="conversation-message">
-                            <div class="message-sender">${username} <span class="message-time">2024-01-15 15:00</span></div>
-                            <div>Спасибо за ответ! Как дела?</div>
-                        </div>
-                        <div class="conversation-reply">
-                            <div class="message-sender">Аноним <span class="message-time">2024-01-15 15:05</span></div>
-                            <div>Все отлично, работаю над улучшением бота!</div>
-                        </div>
-                        <button class="view-conversation-btn" onclick="showSection('users')" style="margin-top: 25px;">
+                        <button class="view-conversation-btn" onclick="showSection('users')" style="margin-top: 20px;">
                             <i class="fas fa-arrow-left"></i> Назад к пользователям
                         </button>
                     </div>
                 `;
             }}
             
-            // Просмотр переписки по ссылке
-            function viewLinkConversation(linkId, linkTitle) {{
+            // Просмотр сообщений ссылки
+            function viewLinkMessages(linkId) {{
                 showSection('conversations');
                 const section = document.getElementById('conversations-section');
                 section.innerHTML = `
-                    <h2><i class="fas fa-comments"></i> ПЕРЕПИСКА ПО ССЫЛКЕ: ${linkTitle}</h2>
+                    <h2><i class="fas fa-comments"></i> СООБЩЕНИЯ ССЫЛКИ: ${{linkId}}</h2>
                     <div class="conversation-view">
-                        <div style="text-align: center; padding: 40px;">
-                            <i class="fas fa-spinner fa-spin fa-3x" style="color: var(--primary); margin-bottom: 20px;"></i>
-                            <h3>Загрузка переписки...</h3>
-                            <p>Идет загрузка истории сообщений для ссылки "${linkTitle}"</p>
+                        <div class="message-bubble">
+                            <div class="message-sender">Аноним <span class="message-time">2024-01-01 12:00</span></div>
+                            <div>Пример анонимного сообщения через ссылку</div>
                         </div>
-                    </div>
-                `;
-                
-                setTimeout(() => {{
-                    loadLinkConversation(linkId, linkTitle);
-                }}, 1000);
-            }}
-            
-            function loadLinkConversation(linkId, linkTitle) {{
-                const section = document.getElementById('conversations-section');
-                section.innerHTML = `
-                    <h2><i class="fas fa-comments"></i> ПЕРЕПИСКА ПО ССЫЛКЕ: ${linkTitle}</h2>
-                    <div class="conversation-view">
-                        <div class="conversation-message">
-                            <div class="message-sender">Аноним <span class="message-time">2024-01-15 10:20</span></div>
-                            <div>Привет! Это первое анонимное сообщение через ссылку</div>
+                        <div class="message-bubble">
+                            <div class="message-sender">Владелец ссылки <span class="message-time">2024-01-01 12:05</span></div>
+                            <div>Пример ответа владельца ссылки</div>
                         </div>
-                        <div class="conversation-reply">
-                            <div class="message-sender">Владелец ссылки <span class="message-time">2024-01-15 10:25</span></div>
-                            <div>Спасибо за сообщение! Рад вас слышать!</div>
-                        </div>
-                        <div class="conversation-message">
-                            <div class="message-sender">Аноним <span class="message-time">2024-01-15 11:30</span></div>
-                            <div>У меня есть вопрос по поводу функционала бота</div>
-                        </div>
-                        <div class="conversation-reply">
-                            <div class="message-sender">Владелец ссылки <span class="message-time">2024-01-15 11:35</span></div>
-                            <div>Конечно, задавайте! Постараюсь помочь с любыми вопросами</div>
-                        </div>
-                        <div class="conversation-message">
-                            <div class="message-sender">Аноним <span class="message-time">2024-01-15 12:00</span></div>
-                            <div>Как создать свою ссылку для анонимных сообщений?</div>
-                        </div>
-                        <div class="conversation-reply">
-                            <div class="message-sender">Владелец ссылки <span class="message-time">2024-01-15 12:05</span></div>
-                            <div>Просто используйте команду /start и выберите "Создать ссылку" в меню!</div>
-                        </div>
-                        <button class="view-conversation-btn" onclick="showSection('links')" style="margin-top: 25px;">
+                        <button class="view-conversation-btn" onclick="showSection('links')" style="margin-top: 20px;">
                             <i class="fas fa-arrow-left"></i> Назад к ссылкам
                         </button>
                     </div>
@@ -1657,6 +1441,7 @@ def generate_html_report():
                     if (entry.isIntersecting) {{
                         entry.target.style.opacity = '1';
                         entry.target.style.transform = 'translateY(0)';
+                        entry.target.style.animation = 'fadeInUp 0.8s ease-out forwards';
                     }}
                 }});
             }}, observerOptions);
@@ -1720,30 +1505,44 @@ def main_keyboard():
         [InlineKeyboardButton("📨 Мои сообщения", callback_data="my_messages")]
     ])
 
-def message_details_keyboard(message_id):
-    return InlineKeyboardMarkup([
+def message_details_keyboard(message_id, user_id, is_admin=False):
+    """Клавиатура для сообщения с опцией удаления"""
+    buttons = [
         [InlineKeyboardButton("💬 Ответить", callback_data=f"reply_{message_id}")],
         [InlineKeyboardButton("📋 Просмотреть ответы", callback_data=f"view_replies_{message_id}")],
-        [InlineKeyboardButton("🔄 Продолжить ответы", callback_data=f"continue_reply_{message_id}")],
-        [InlineKeyboardButton("🔙 Назад к сообщениям", callback_data="my_messages")]
-    ])
-
-def reply_to_reply_keyboard(reply_id, message_id):
-    """Клавиатура для ответа на ответ"""
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("💬 Ответить на этот ответ", callback_data=f"reply_to_reply_{reply_id}")],
-        [InlineKeyboardButton("🔄 Несколько ответов", callback_data=f"multi_reply_to_reply_{reply_id}")],
-        [InlineKeyboardButton("📋 Все ответы", callback_data=f"view_replies_{message_id}")],
-        [InlineKeyboardButton("🔙 Назад", callback_data=f"view_replies_{message_id}")]
-    ])
+    ]
+    
+    # Добавляем кнопку удаления если пользователь владелец или админ
+    message_owner = get_message_owner(message_id)
+    if message_owner and (message_owner[0] == user_id or is_admin):
+        buttons.append([InlineKeyboardButton("🗑️ Удалить сообщение", callback_data=f"confirm_delete_message_{message_id}")])
+    
+    buttons.append([InlineKeyboardButton("🔙 Назад к сообщениям", callback_data="my_messages")])
+    
+    return InlineKeyboardMarkup(buttons)
 
 def admin_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📊 Статистика", callback_data="admin_stats")],
-        [InlineKeyboardButton("📜 История переписки", callback_data="admin_history")],
+        [InlineKeyboardButton("👥 Управление пользователями", callback_data="admin_users_management")],
         [InlineKeyboardButton("🎨 HTML Отчет", callback_data="admin_html_report")],
         [InlineKeyboardButton("📢 Оповещение", callback_data="admin_broadcast")],
+        [InlineKeyboardButton("🛑 Остановить бота", callback_data="admin_shutdown")],
         [InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]
+    ])
+
+def delete_confirmation_keyboard(item_type, item_id):
+    """Клавиатура подтверждения удаления"""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Да, удалить", callback_data=f"delete_{item_type}_{item_id}")],
+        [InlineKeyboardButton("❌ Отмена", callback_data="cancel_delete")]
+    ])
+
+def shutdown_confirmation_keyboard():
+    """Клавиатура подтверждения остановки бота"""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🛑 ДА, ОСТАНОВИТЬ БОТА", callback_data="confirm_shutdown")],
+        [InlineKeyboardButton("✅ Продолжить работу", callback_data="admin_panel")]
     ])
 
 def back_to_main_keyboard():
@@ -1751,6 +1550,9 @@ def back_to_main_keyboard():
 
 def back_to_admin_keyboard():
     return InlineKeyboardMarkup([[InlineKeyboardButton("🔙 В админку", callback_data="admin_panel")]])
+
+# Глобальная переменная для остановки бота
+bot_shutdown_requested = False
 
 # --- ОСНОВНЫЕ ОБРАБОТЧИКИ ---
 
@@ -1792,12 +1594,19 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Произошла ошибка\\. Попробуйте позже\\.", parse_mode='MarkdownV2')
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global bot_shutdown_requested
+    
     try:
         query = update.callback_query
         await query.answer()
         user = query.from_user
         data = query.data
         is_admin = user.username == ADMIN_USERNAME or user.id == ADMIN_ID
+
+        # Проверка на остановку бота
+        if bot_shutdown_requested:
+            await query.edit_message_text("🛑 *Бот остановлен*\n\nДля перезапуска необходимо развернуть новую версию\\.", parse_mode='MarkdownV2')
+            return
 
         # Основные команды меню
         if data == "main_menu":
@@ -1814,6 +1623,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     link_url = f"https://t.me/{bot_username}?start={link[0]}"
                     created = format_datetime(link[3])
                     text += f"📝 *{escape_markdown_v2(link[1])}*\n📋 {escape_markdown_v2(link[2])}\n🔗 `{escape_markdown_v2(link_url)}`\n🕒 `{created}`\n\n"
+                    # Добавляем кнопку удаления для каждой ссылки
+                    text += f"🗑️ *Удалить ссылку* \\- /delete\\_link\\_{link[0]}\n\n"
                 await query.edit_message_text(text, parse_mode='MarkdownV2', reply_markup=back_to_main_keyboard())
             else:
                 await query.edit_message_text("У вас пока нет созданных ссылок\\.", reply_markup=back_to_main_keyboard(), parse_mode='MarkdownV2')
@@ -1833,7 +1644,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         preview = preview[:50] + "\\.\\.\\."
                         
                     created_str = format_datetime(created)
-                    # ИСПРАВЛЕНО: экранирование символа #
                     text += f"{type_icon} *{escape_markdown_v2(link_title)}*\n{format_as_quote(preview)}\n🕒 `{created_str}` \\| 💬 Ответов\\: {reply_count}\n\n"
                 
                 await query.edit_message_text(text, parse_mode='MarkdownV2', reply_markup=back_to_main_keyboard())
@@ -1847,144 +1657,45 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("📝 Введите *название* для вашей ссылки:", parse_mode='MarkdownV2', reply_markup=back_to_main_keyboard())
             return
         
-        # Обработка ответов на сообщения
-        elif data.startswith("reply_"):
-            message_id = int(data.replace("reply_", ""))
-            context.user_data['replying_to'] = message_id
-            context.user_data['reply_mode'] = 'single'
-            # ИСПРАВЛЕНО: экранирование символа #
-            await query.edit_message_text(
-                f"✍️ *Режим ответа на сообщение* \\#{message_id}\n\nВведите ваш ответ:",
-                parse_mode='MarkdownV2', 
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("💬 Отправить один ответ", callback_data=f"confirm_reply_{message_id}")],
-                    [InlineKeyboardButton("🔄 Режим нескольких ответов", callback_data=f"multi_reply_{message_id}")],
-                    [InlineKeyboardButton("🔙 Назад", callback_data=f"view_replies_{message_id}")]
-                ])
-            )
-            return
-        
-        elif data.startswith("multi_reply_"):
-            message_id = int(data.replace("multi_reply_", ""))
-            context.user_data['replying_to'] = message_id
-            context.user_data['reply_mode'] = 'multi'
-            context.user_data['multi_reply_count'] = 0
-            # ИСПРАВЛЕНО: экранирование символа #
-            await query.edit_message_text(
-                f"🔄 *Режим нескольких ответов на сообщение* \\#{message_id}\n\nВведите первый ответ:\n\n_Вы можете отправлять несколько ответов подряд\\. Для завершения нажмите \"Завершить ответы\"_",
-                parse_mode='MarkdownV2',
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("⏹️ Завершить ответы", callback_data=f"end_multi_reply_{message_id}")],
-                    [InlineKeyboardButton("🔙 Назад", callback_data=f"view_replies_{message_id}")]
-                ])
-            )
-            return
-        
-        elif data.startswith("end_multi_reply_"):
-            message_id = int(data.replace("end_multi_reply_", ""))
-            count = context.user_data.get('multi_reply_count', 0)
-            context.user_data.pop('replying_to', None)
-            context.user_data.pop('reply_mode', None)
-            context.user_data.pop('multi_reply_count', None)
-            await query.edit_message_text(
-                f"✅ *Режим ответов завершен*\n\nОтправлено ответов\\: {count}\n\nОтветы доставлены анонимно\\!",
-                parse_mode='MarkdownV2',
-                reply_markup=message_details_keyboard(message_id)
-            )
-            return
-        
-        elif data.startswith("continue_reply_"):
-            message_id = int(data.replace("continue_reply_", ""))
-            context.user_data['replying_to'] = message_id
-            context.user_data['reply_mode'] = 'multi'
-            current_count = context.user_data.get('multi_reply_count', 0)
-            # ИСПРАВЛЕНО: экранирование символа #
-            await query.edit_message_text(
-                f"🔄 *Продолжение ответов на сообщение* \\#{message_id}\n\nТекущее количество ответов\\: {current_count}\n\nВведите следующий ответ:",
-                parse_mode='MarkdownV2',
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("⏹️ Завершить ответы", callback_data=f"end_multi_reply_{message_id}")],
-                    [InlineKeyboardButton("🔙 Назад", callback_data=f"view_replies_{message_id}")]
-                ])
-            )
-            return
-        
-        elif data.startswith("view_replies_"):
-            message_id = int(data.replace("view_replies_", ""))
-            replies = get_message_replies(message_id)
-            if replies:
-                # ИСПРАВЛЕНО: экранирование символа #
-                text = f"💬 *Ответы на сообщение* \\#{message_id}\\:\n\n"
-                for i, reply in enumerate(replies, 1):
-                    reply_id, reply_text, created, username, first_name = reply
-                    sender = f"@{username}" if username else (first_name or "Аноним")
-                    created_str = format_datetime(created)
-                    text += f"{i}\\. 👤 *{escape_markdown_v2(sender)}* \\(`{created_str}`\\)\\:\n{format_as_quote(reply_text)}\n\n"
-                    # Добавляем кнопку для ответа на конкретный ответ
-                    text += f"   └─ 💬 *Ответить на этот ответ* \\- /reply\\_to\\_{reply_id}\n\n"
+        # Управление удалением
+        elif data.startswith("confirm_delete_message_"):
+            message_id = int(data.replace("confirm_delete_message_", ""))
+            message_info = get_message_info(message_id)
+            
+            if message_info:
+                msg_text, msg_type, file_name, created, from_user, from_name, to_user, to_name, link_title = message_info
                 
-                await query.edit_message_text(text, parse_mode='MarkdownV2', reply_markup=message_details_keyboard(message_id))
+                text = f"🗑️ *Подтверждение удаления сообщения*\n\n"
+                text += f"📝 *Сообщение\\:*\n{format_as_quote(msg_text if msg_text else f'Медиафайл: {msg_type}')}\n\n"
+                text += f"👤 *От\\:* {escape_markdown_v2(from_user or from_name or 'Аноним')}\n"
+                text += f"👥 *Кому\\:* {escape_markdown_v2(to_user or to_name or 'Аноним')}\n"
+                text += f"🔗 *Ссылка\\:* {escape_markdown_v2(link_title or 'N/A')}\n"
+                text += f"🕒 *Время\\:* `{format_datetime(created)}`\n\n"
+                text += "❓ *Вы уверены, что хотите удалить это сообщение?*"
+                
+                await query.edit_message_text(text, parse_mode='MarkdownV2', 
+                                           reply_markup=delete_confirmation_keyboard("message", message_id))
+            return
+        
+        elif data.startswith("delete_message_"):
+            message_id = int(data.replace("delete_message_", ""))
+            success = deactivate_message(message_id)
+            
+            if success:
+                push_db_to_github(f"Delete message {message_id}")
+                await query.edit_message_text("✅ *Сообщение успешно удалено\\!*", 
+                                           parse_mode='MarkdownV2', 
+                                           reply_markup=back_to_main_keyboard())
             else:
-                # ИСПРАВЛЕНО: экранирование символа #
-                await query.edit_message_text(
-                    f"💬 На сообщение \\#{message_id} пока нет ответов\\.\n\nБудьте первым, кто ответит\\!",
-                    parse_mode='MarkdownV2', 
-                    reply_markup=message_details_keyboard(message_id)
-                )
+                await query.edit_message_text("❌ *Ошибка при удалении сообщения*", 
+                                           parse_mode='MarkdownV2', 
+                                           reply_markup=back_to_main_keyboard())
             return
-
-        # Ответ на ответ
-        elif data.startswith("reply_to_reply_"):
-            reply_id = int(data.replace("reply_to_reply_", ""))
-            context.user_data['replying_to_reply'] = reply_id
-            context.user_data['reply_mode'] = 'single_reply'
-            
-            reply_info = run_query("SELECT r.reply_text, r.message_id FROM replies r WHERE r.reply_id = ?", (reply_id,), fetch="one")
-            if reply_info:
-                reply_text, message_id = reply_info
-                # ИСПРАВЛЕНО: экранирование символа #
-                await query.edit_message_text(
-                    f"💬 *Ответ на ответ* \\#{reply_id}\n\n*Оригинальный ответ\\:*\n{format_as_quote(reply_text)}\n\nВведите ваш ответ\\:",
-                    parse_mode='MarkdownV2',
-                    reply_markup=reply_to_reply_keyboard(reply_id, message_id)
-                )
-            return
-
-        elif data.startswith("multi_reply_to_reply_"):
-            reply_id = int(data.replace("multi_reply_to_reply_", ""))
-            context.user_data['replying_to_reply'] = reply_id
-            context.user_data['reply_mode'] = 'multi_reply'
-            context.user_data['multi_reply_count'] = 0
-            
-            reply_info = run_query("SELECT r.reply_text, r.message_id FROM replies r WHERE r.reply_id = ?", (reply_id,), fetch="one")
-            if reply_info:
-                reply_text, message_id = reply_info
-                # ИСПРАВЛЕНО: экранирование символа #
-                await query.edit_message_text(
-                    f"🔄 *Несколько ответов на ответ* \\#{reply_id}\n\n*Оригинальный ответ\\:*\n{format_as_quote(reply_text)}\n\nВведите первый ответ\\:\n\n_Вы можете отправлять несколько ответов подряд\\. Для завершения нажмите \"Завершить ответы\"_",
-                    parse_mode='MarkdownV2',
-                    reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("⏹️ Завершить ответы", callback_data=f"end_multi_reply_to_reply_{reply_id}")],
-                        [InlineKeyboardButton("🔙 Назад", callback_data=f"view_replies_{message_id}")]
-                    ])
-                )
-            return
-
-        elif data.startswith("end_multi_reply_to_reply_"):
-            reply_id = int(data.replace("end_multi_reply_to_reply_", ""))
-            count = context.user_data.get('multi_reply_count', 0)
-            context.user_data.pop('replying_to_reply', None)
-            context.user_data.pop('reply_mode', None)
-            context.user_data.pop('multi_reply_count', None)
-            
-            reply_info = run_query("SELECT r.message_id FROM replies r WHERE r.reply_id = ?", (reply_id,), fetch="one")
-            message_id = reply_info[0] if reply_info else None
-            
-            await query.edit_message_text(
-                f"✅ *Режим ответов завершен*\n\nОтправлено ответов\\: {count}\n\nОтветы доставлены анонимно\\!",
-                parse_mode='MarkdownV2',
-                reply_markup=message_details_keyboard(message_id) if message_id else back_to_main_keyboard()
-            )
+        
+        elif data == "cancel_delete":
+            await query.edit_message_text("❌ *Удаление отменено*", 
+                                       parse_mode='MarkdownV2', 
+                                       reply_markup=back_to_main_keyboard())
             return
 
         # АДМИН ПАНЕЛЬ
@@ -2017,16 +1728,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 else:
                     await query.answer("❌ Требуется аутентификация\\!", show_alert=True)
             
-            elif data == "admin_history":
+            elif data == "admin_users_management":
                 if context.user_data.get('admin_authenticated'):
                     users = get_all_users_for_admin()
                     if users:
-                        kb = []
-                        for u in users[:15]:
-                            username = u[1] or u[2] or f"ID\\: {u[0]}"
-                            kb.append([InlineKeyboardButton(f"👤 {username}", callback_data=f"admin_view_user:{u[0]}")])
-                        kb.append([InlineKeyboardButton("🔙 Назад", callback_data="admin_panel")])
-                        await query.edit_message_text("👥 *Выберите пользователя для просмотра истории\\:*", reply_markup=InlineKeyboardMarkup(kb))
+                        text = "👥 *Управление пользователями*\n\n"
+                        for u in users[:10]:
+                            username = f"@{u[1]}" if u[1] else (u[2] or f"ID\\:{u[0]}")
+                            text += f"👤 *{escape_markdown_v2(username)}*\n🆔 `{u[0]}` \\| 📅 `{format_datetime(u[3])}`\n\n"
+                        await query.edit_message_text(text, parse_mode='MarkdownV2', reply_markup=admin_keyboard())
                     else:
                         await query.edit_message_text("Пользователей не найдено\\.", parse_mode='MarkdownV2', reply_markup=admin_keyboard())
                 else:
@@ -2065,43 +1775,36 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 else:
                     await query.answer("❌ Требуется аутентификация\\!", show_alert=True)
             
-            elif data.startswith("admin_view_user:"):
+            elif data == "admin_shutdown":
                 if context.user_data.get('admin_authenticated'):
-                    user_id = int(data.split(":")[1])
-                    history = get_full_history_for_admin(user_id)
+                    await query.edit_message_text(
+                        "🛑 *ЭКСТРЕННАЯ ОСТАНОВКА БОТА*\n\n⚠️ *ВНИМАНИЕ\\!* Это действие полностью остановит бота\\.\n\n*Для перезапуска потребуется*\\:\n• Ручной рестарт в панели Render\n• Или новое развертывание\n\n❓ *Вы уверены, что хотите остановить бота?*",
+                        parse_mode='MarkdownV2',
+                        reply_markup=shutdown_confirmation_keyboard()
+                    )
+                else:
+                    await query.answer("❌ Требуется аутентификация\\!", show_alert=True)
+            
+            elif data == "confirm_shutdown":
+                if context.user_data.get('admin_authenticated'):
+                    global bot_shutdown_requested
+                    bot_shutdown_requested = True
                     
-                    if not history:
-                        await query.edit_message_text("_История сообщений не найдена\\._", parse_mode='MarkdownV2', reply_markup=admin_keyboard())
-                        return
+                    # Создаем резервную копию перед остановкой
+                    backup_database()
                     
-                    await query.edit_message_text(f"📜 *История переписки для пользователя ID {user_id}*\n*Всего сообщений\\: {len(history)}*", parse_mode='MarkdownV2')
+                    await query.edit_message_text(
+                        "🛑 *БОТ ОСТАНАВЛИВАЕТСЯ*\n\n📦 *Создана резервная копия базы данных*\n⚡ *Все процессы завершаются*\n\n*Бот будет полностью остановлен через несколько секунд\\.*\n\n*Для перезапуска*\\:\n1\\. Зайдите в Render Dashboard\n2\\. Найдите ваш сервис\n3\\. Нажмите \\\"Manual Restart\\\"",
+                        parse_mode='MarkdownV2'
+                    )
                     
-                    for i, msg in enumerate(history[:5]):
-                        msg_id, msg_text, msg_type, file_id, file_size, file_name, created, from_user, from_name, to_user, to_name, link_title, link_id = msg
-                        
-                        created_str = format_datetime(created)
-                        # ИСПРАВЛЕНО: экранирование символа #
-                        header = f"*#{i+1}* \\| 🕒 `{created_str}`\n"
-                        header += f"*От\\:* {escape_markdown_v2(from_user or from_name or 'Аноним')}\n"
-                        header += f"*Кому\\:* {escape_markdown_v2(to_user or to_name or 'Аноним')}\n"
-                        header += f"*Ссылка\\:* {escape_markdown_v2(link_title or 'N/A')}\n"
-                        
-                        if msg_type == 'text':
-                            await query.message.reply_text(f"{header}\n{format_as_quote(msg_text)}", parse_mode='MarkdownV2')
-                        else:
-                            file_info = f"\n*Тип\\:* {msg_type}"
-                            if file_size:
-                                file_info += f" \\({(file_size or 0) // 1024} KB\\)"
-                            if file_name:
-                                file_info += f"\n*Файл\\:* {escape_markdown_v2(file_name)}"
-                            
-                            caption = f"{header}{file_info}"
-                            await query.message.reply_text(f"{caption}\n\n*Содержание\\:* {format_as_quote(msg_text)}", parse_mode='MarkdownV2')
+                    # Даем время на отправку сообщения перед остановкой
+                    await asyncio.sleep(3)
                     
-                    if len(history) > 5:
-                        await query.message.reply_text(f"*\\\\.\\\\.\\\\. и ещё {len(history) - 5} сообщений*\n_Для полного просмотра используйте HTML отчет_", parse_mode='MarkdownV2')
+                    # Останавливаем бота
+                    logging.critical("🛑 BOT SHUTDOWN INITIATED BY ADMIN")
+                    os._exit(0)
                     
-                    await query.message.reply_text("🛠️ *Панель администратора*", reply_markup=admin_keyboard(), parse_mode='MarkdownV2')
                 else:
                     await query.answer("❌ Требуется аутентификация\\!", show_alert=True)
 
@@ -2113,7 +1816,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global bot_shutdown_requested
+    
     try:
+        # Проверка на остановку бота
+        if bot_shutdown_requested:
+            await update.message.reply_text("🛑 *Бот остановлен*\n\nДля перезапуска необходимо развернуть новую версию\\.", parse_mode='MarkdownV2')
+            return
+
         user = update.effective_user
         text = update.message.text
         save_user(user.id, user.username, user.first_name)
@@ -2126,108 +1836,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "✅ *Пароль принят\\! Добро пожаловать в админ\\-панель\\.*", 
                 reply_markup=admin_keyboard(), 
                 parse_mode='MarkdownV2'
-            )
-            return
-
-        # Ответ на сообщение (одиночный режим)
-        if 'replying_to' in context.user_data and context.user_data.get('reply_mode') == 'single':
-            msg_id = context.user_data.pop('replying_to')
-            context.user_data.pop('reply_mode', None)
-            save_reply(msg_id, user.id, text)
-            original_msg = run_query("SELECT m.from_user_id, m.message_text FROM messages m WHERE m.message_id = ?", (msg_id,), fetch="one")
-            if original_msg:
-                try:
-                    reply_notification = f"💬 *Получен ответ на ваше сообщение\\:*\n{format_as_quote(original_msg[1])}\n\n*Ответ\\:*\n{format_as_quote(text)}"
-                    await context.bot.send_message(original_msg[0], reply_notification, parse_mode='MarkdownV2')
-                except Exception as e:
-                    logging.error(f"Failed to send reply notification: {e}")
-            await update.message.reply_text("✅ Ваш ответ отправлен анонимно\\!", reply_markup=main_keyboard(), parse_mode='MarkdownV2')
-            return
-
-        # Ответ на сообщение (режим нескольких ответов)
-        if 'replying_to' in context.user_data and context.user_data.get('reply_mode') == 'multi':
-            msg_id = context.user_data['replying_to']
-            save_reply(msg_id, user.id, text)
-            
-            current_count = context.user_data.get('multi_reply_count', 0)
-            context.user_data['multi_reply_count'] = current_count + 1
-            
-            original_msg = run_query("SELECT m.from_user_id, m.message_text FROM messages m WHERE m.message_id = ?", (msg_id,), fetch="one")
-            if original_msg:
-                try:
-                    # ИСПРАВЛЕНО: экранирование символа #
-                    reply_notification = f"💬 *Получен ответ на ваше сообщение\\:*\n{format_as_quote(original_msg[1])}\n\n*Ответ #{current_count + 1}\\:*\n{format_as_quote(text)}"
-                    await context.bot.send_message(original_msg[0], reply_notification, parse_mode='MarkdownV2')
-                except Exception as e:
-                    logging.error(f"Failed to send reply notification: {e}")
-            
-            # ИСПРАВЛЕНО: экранирование символа #
-            await update.message.reply_text(
-                f"✅ *Ответ #{current_count + 1} отправлен\\!*\n\nМожете отправить следующий ответ или завершить режим ответов\\.",
-                parse_mode='MarkdownV2',
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔄 Продолжить ответы", callback_data=f"continue_reply_{msg_id}")],
-                    [InlineKeyboardButton("⏹️ Завершить ответы", callback_data=f"end_multi_reply_{msg_id}")],
-                    [InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]
-                ])
-            )
-            return
-
-        # Ответ на ответ (одиночный режим)
-        if 'replying_to_reply' in context.user_data and context.user_data.get('reply_mode') == 'single_reply':
-            reply_id = context.user_data.pop('replying_to_reply')
-            context.user_data.pop('reply_mode', None)
-            
-            # Получаем информацию об ответе
-            reply_info = run_query("SELECT r.message_id, r.from_user_id, r.reply_text FROM replies r WHERE r.reply_id = ?", (reply_id,), fetch="one")
-            if reply_info:
-                message_id, original_reply_user_id, original_reply_text = reply_info
-                
-                # Сохраняем новый ответ
-                new_reply_id = save_reply(message_id, user.id, text)
-                
-                # Отправляем уведомление автору оригинального ответа
-                try:
-                    reply_notification = f"💬 *Получен ответ на ваш ответ\\:*\n{format_as_quote(original_reply_text)}\n\n*Новый ответ\\:*\n{format_as_quote(text)}"
-                    await context.bot.send_message(original_reply_user_id, reply_notification, parse_mode='MarkdownV2')
-                except Exception as e:
-                    logging.error(f"Failed to send reply notification: {e}")
-            
-            await update.message.reply_text("✅ Ваш ответ на ответ отправлен анонимно\\!", reply_markup=main_keyboard(), parse_mode='MarkdownV2')
-            return
-
-        # Ответ на ответ (режим нескольких ответов)
-        if 'replying_to_reply' in context.user_data and context.user_data.get('reply_mode') == 'multi_reply':
-            reply_id = context.user_data['replying_to_reply']
-            
-            # Получаем информацию об ответе
-            reply_info = run_query("SELECT r.message_id, r.from_user_id, r.reply_text FROM replies r WHERE r.reply_id = ?", (reply_id,), fetch="one")
-            if reply_info:
-                message_id, original_reply_user_id, original_reply_text = reply_info
-                
-                # Сохраняем новый ответ
-                save_reply(message_id, user.id, text)
-                
-                current_count = context.user_data.get('multi_reply_count', 0)
-                context.user_data['multi_reply_count'] = current_count + 1
-                
-                # Отправляем уведомление автору оригинального ответа
-                try:
-                    # ИСПРАВЛЕНО: экранирование символа #
-                    reply_notification = f"💬 *Получен ответ на ваш ответ\\:*\n{format_as_quote(original_reply_text)}\n\n*Ответ #{current_count + 1}\\:*\n{format_as_quote(text)}"
-                    await context.bot.send_message(original_reply_user_id, reply_notification, parse_mode='MarkdownV2')
-                except Exception as e:
-                    logging.error(f"Failed to send reply notification: {e}")
-            
-            # ИСПРАВЛЕНО: экранирование символа #
-            await update.message.reply_text(
-                f"✅ *Ответ на ответ #{current_count + 1} отправлен\\!*\n\nМожете отправить следующий ответ или завершить режим ответов\\.",
-                parse_mode='MarkdownV2',
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔄 Продолжить ответы", callback_data=f"continue_reply_to_reply_{reply_id}")],
-                    [InlineKeyboardButton("⏹️ Завершить ответы", callback_data=f"end_multi_reply_to_reply_{reply_id}")],
-                    [InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]
-                ])
             )
             return
 
@@ -2252,25 +1860,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             return
 
-        # Рассылка от админа
-        if is_admin and context.user_data.get('broadcasting') and context.user_data.get('admin_authenticated'):
-            context.user_data.pop('broadcasting')
-            users = run_query("SELECT user_id FROM users", fetch="all")
-            sent_count = 0
-            if users:
-                for u in users:
-                    try:
-                        await context.bot.send_message(u[0], text, parse_mode='MarkdownV2')
-                        sent_count += 1
-                    except Exception as e:
-                        logging.warning(f"Broadcast failed for user {u[0]}: {e}")
-            await update.message.reply_text(
-                f"📢 *Рассылка завершена*\n\nОтправлено\\: {sent_count}/{len(users) if users else 0} пользователям\\.",
-                parse_mode='MarkdownV2', 
-                reply_markup=admin_keyboard()
-            )
-            return
-
         # Отправка анонимного сообщения
         if context.user_data.get('current_link'):
             link_id = context.user_data.pop('current_link')
@@ -2279,14 +1868,27 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 msg_id = save_message(link_id, user.id, link_info[1], text)
                 notification = f"📨 *Новое анонимное сообщение*\n\n{format_as_quote(text)}"
                 try:
-                    await context.bot.send_message(link_info[1], notification, parse_mode='MarkdownV2', reply_markup=message_details_keyboard(msg_id))
+                    await context.bot.send_message(link_info[1], notification, parse_mode='MarkdownV2', reply_markup=message_details_keyboard(msg_id, link_info[1], is_admin))
                 except Exception as e:
                     logging.error(f"Failed to send message notification: {e}")
                 
-                admin_notification = f"📨 *Новое сообщение*\nОт\\: {escape_markdown_v2(user.username or user.first_name or 'Аноним')} \\> Кому\\: {escape_markdown_v2(link_info[4] or 'Аноним')}\n\n{format_as_quote(text)}"
-                await context.bot.send_message(ADMIN_ID, admin_notification, parse_mode='MarkdownV2')
-                
                 await update.message.reply_text("✅ Ваше сообщение отправлено анонимно\\!", reply_markup=main_keyboard(), parse_mode='MarkdownV2')
+            return
+
+        # Команды удаления через текст
+        if text.startswith('/delete_link_'):
+            link_id = text.replace('/delete_link_', '').strip()
+            link_owner = get_link_owner(link_id)
+            
+            if link_owner and (link_owner[0] == user.id or is_admin):
+                success = deactivate_link(link_id)
+                if success:
+                    push_db_to_github(f"Delete link {link_id}")
+                    await update.message.reply_text("✅ *Ссылка успешно удалена\\!*", parse_mode='MarkdownV2', reply_markup=main_keyboard())
+                else:
+                    await update.message.reply_text("❌ *Ошибка при удалении ссылки*", parse_mode='MarkdownV2', reply_markup=main_keyboard())
+            else:
+                await update.message.reply_text("⛔️ *У вас нет прав для удаления этой ссылки*", parse_mode='MarkdownV2', reply_markup=main_keyboard())
             return
 
         await update.message.reply_text("Используйте кнопки для навигации\\.", reply_markup=main_keyboard(), parse_mode='MarkdownV2')
@@ -2296,7 +1898,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Произошла ошибка\\. Попробуйте позже\\.", parse_mode='MarkdownV2')
 
 async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global bot_shutdown_requested
+    
     try:
+        # Проверка на остановку бота
+        if bot_shutdown_requested:
+            await update.message.reply_text("🛑 *Бот остановлен*", parse_mode='MarkdownV2')
+            return
+
         user = update.effective_user
         save_user(user.id, user.username, user.first_name)
         msg = update.message
@@ -2331,32 +1940,18 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     file_info += f"\n📄 `{escape_markdown_v2(file_name)}`"
                 
                 user_caption = f"📨 *Новый анонимный {msg_type}*{file_info}\n\n{format_as_quote(caption)}"
-                admin_caption = f"📨 *Новый {msg_type}*\nОт\\: {escape_markdown_v2(user.username or user.first_name or 'Аноним')} \\> Кому\\: {escape_markdown_v2(link_info[4] or 'Аноним')}{file_info}\n\n{format_as_quote(caption)}"
                 
                 try:
                     if msg_type == 'photo': 
-                        await context.bot.send_photo(link_info[1], file_id, caption=user_caption, parse_mode='MarkdownV2', reply_markup=message_details_keyboard(msg_id))
+                        await context.bot.send_photo(link_info[1], file_id, caption=user_caption, parse_mode='MarkdownV2', reply_markup=message_details_keyboard(msg_id, link_info[1], False))
                     elif msg_type == 'video': 
-                        await context.bot.send_video(link_info[1], file_id, caption=user_caption, parse_mode='MarkdownV2', reply_markup=message_details_keyboard(msg_id))
+                        await context.bot.send_video(link_info[1], file_id, caption=user_caption, parse_mode='MarkdownV2', reply_markup=message_details_keyboard(msg_id, link_info[1], False))
                     elif msg_type == 'document': 
-                        await context.bot.send_document(link_info[1], file_id, caption=user_caption, parse_mode='MarkdownV2', reply_markup=message_details_keyboard(msg_id))
+                        await context.bot.send_document(link_info[1], file_id, caption=user_caption, parse_mode='MarkdownV2', reply_markup=message_details_keyboard(msg_id, link_info[1], False))
                     elif msg_type == 'voice': 
-                        await context.bot.send_voice(link_info[1], file_id, caption=user_caption, parse_mode='MarkdownV2', reply_markup=message_details_keyboard(msg_id))
+                        await context.bot.send_voice(link_info[1], file_id, caption=user_caption, parse_mode='MarkdownV2', reply_markup=message_details_keyboard(msg_id, link_info[1], False))
                 except Exception as e: 
                     logging.error(f"Failed to send media to user: {e}")
-
-                try:
-                    if msg_type in ['photo', 'video', 'document']:
-                        if msg_type == 'photo': 
-                            await context.bot.send_photo(ADMIN_ID, file_id, caption=admin_caption, parse_mode='MarkdownV2')
-                        elif msg_type == 'video': 
-                            await context.bot.send_video(ADMIN_ID, file_id, caption=admin_caption, parse_mode='MarkdownV2')
-                        elif msg_type == 'document': 
-                            await context.bot.send_document(ADMIN_ID, file_id, caption=admin_caption, parse_mode='MarkdownV2')
-                    elif msg_type == 'voice':
-                        await context.bot.send_voice(ADMIN_ID, file_id, caption=admin_caption, parse_mode='MarkdownV2')
-                except Exception as e: 
-                    logging.error(f"Failed to send media to admin: {e}")
                 
                 await update.message.reply_text("✅ Ваше медиа отправлено анонимно\\!", reply_markup=main_keyboard(), parse_mode='MarkdownV2')
 
@@ -2364,37 +1959,20 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logging.error(f"Ошибка в обработчике медиа: {e}")
         await update.message.reply_text("❌ Произошла ошибка при отправке медиа\\.", parse_mode='MarkdownV2')
 
-async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик ошибок."""
-    logging.error(f"Exception while handling an update: {context.error}", exc_info=context.error)
-
-async def post_init(application: Application):
-    """Функция, выполняемая после инициализации бота."""
-    logging.info("Бот успешно инициализирован и готов к работе")
-    # Создаем резервную копию БД при запуске
-    backup_database()
-
-async def post_stop(application: Application):
-    """Функция, выполняемая перед остановкой бота."""
-    logging.info("Бот останавливается...")
-    # Создаем резервную копию БД перед остановкой
-    backup_database()
-
 def main():
     if not all([BOT_TOKEN, ADMIN_ID]):
         logging.critical("КРИТИЧЕСКАЯ ОШИБКА: Не установлены обязательные переменные окружения BOT_TOKEN и ADMIN_ID")
         return
     
-    # Инициализация репозитория и БД с улучшенной обработкой ошибок
+    # Инициализация репозитория и БД
     try:
         setup_repo()
         init_db()
     except Exception as e:
         logging.error(f"Ошибка при инициализации: {e}")
-        # Продолжаем работу даже при ошибках инициализации
     
-    # Создание приложения с улучшенными настройками
-    application = Application.builder().token(BOT_TOKEN).post_init(post_init).post_stop(post_stop).build()
+    # Создание приложения
+    application = Application.builder().token(BOT_TOKEN).build()
     
     # Добавление обработчиков
     application.add_handler(CommandHandler("start", start))
@@ -2405,24 +1983,21 @@ def main():
     application.add_handler(MessageHandler(media_filters & ~filters.COMMAND, handle_media))
     
     # Добавление обработчика ошибок
-    application.add_error_handler(error_handler)
+    application.add_error_handler(lambda update, context: logging.error(f"Exception: {context.error}"))
     
     logging.info("Бот запускается...")
     
     try:
-        # Запуск бота с улучшенными настройками
+        # Запуск бота
         application.run_polling(
             allowed_updates=Update.ALL_TYPES,
-            drop_pending_updates=True,  # Убираем старые updates чтобы избежать задержек
-            close_loop=False,
-            pool_timeout=20,  # Увеличиваем timeout
+            drop_pending_updates=True,
+            pool_timeout=20,
             read_timeout=20,
             connect_timeout=20
         )
     except Exception as e:
         logging.critical(f"Критическая ошибка при запуске бота: {e}")
-        # Создаем резервную копию при критической ошибке
-        backup_database()
 
 if __name__ == "__main__":
     main()
