@@ -278,6 +278,106 @@ def get_full_history_for_admin(user_id):
         ORDER BY m.created_at ASC
     ''', (user_id, user_id), fetch="all")
 
+def get_conversation_for_link(link_id):
+    """Получает полную переписку по ссылке"""
+    return run_query('''
+        SELECT 
+            'message' as type, 
+            m.message_id, 
+            m.message_text, 
+            m.message_type, 
+            m.file_id, 
+            m.file_size, 
+            m.file_name,
+            m.created_at,
+            u.username as from_username,
+            u.first_name as from_first_name,
+            m.from_user_id,
+            NULL as reply_text,
+            NULL as reply_username,
+            NULL as reply_first_name
+        FROM messages m
+        LEFT JOIN users u ON m.from_user_id = u.user_id
+        WHERE m.link_id = ?
+        
+        UNION ALL
+        
+        SELECT 
+            'reply' as type,
+            r.message_id,
+            NULL as message_text,
+            NULL as message_type,
+            NULL as file_id,
+            NULL as file_size,
+            NULL as file_name,
+            r.created_at,
+            NULL as from_username,
+            NULL as from_first_name,
+            r.from_user_id,
+            r.reply_text,
+            u.username as reply_username,
+            u.first_name as reply_first_name
+        FROM replies r
+        LEFT JOIN users u ON r.from_user_id = u.user_id
+        LEFT JOIN messages m ON r.message_id = m.message_id
+        WHERE m.link_id = ?
+        
+        ORDER BY created_at ASC
+    ''', (link_id, link_id), fetch="all")
+
+def get_conversation_for_user(user_id):
+    """Получает полную переписку пользователя"""
+    return run_query('''
+        SELECT 
+            'message' as type, 
+            m.message_id, 
+            m.message_text, 
+            m.message_type, 
+            m.file_id, 
+            m.file_size, 
+            m.file_name,
+            m.created_at,
+            u_from.username as from_username,
+            u_from.first_name as from_first_name,
+            m.from_user_id,
+            u_to.username as to_username,
+            u_to.first_name as to_first_name,
+            m.to_user_id,
+            l.title as link_title,
+            l.link_id,
+            NULL as reply_text
+        FROM messages m
+        LEFT JOIN users u_from ON m.from_user_id = u_from.user_id
+        LEFT JOIN users u_to ON m.to_user_id = u_to.user_id
+        LEFT JOIN links l ON m.link_id = l.link_id
+        WHERE m.from_user_id = ? OR m.to_user_id = ?
+        
+        UNION ALL
+        
+        SELECT 
+            'reply' as type,
+            r.message_id,
+            NULL as message_text,
+            NULL as message_type,
+            NULL as file_id,
+            NULL as file_size,
+            NULL as file_name,
+            r.created_at,
+            NULL as from_username,
+            NULL as from_first_name,
+            r.from_user_id,
+            NULL as to_username,
+            NULL as to_first_name,
+            NULL as to_user_id,
+            NULL as link_title,
+            NULL as link_id,
+            r.reply_text
+        FROM replies r
+        WHERE r.from_user_id = ?
+        
+        ORDER BY created_at ASC
+    ''', (user_id, user_id, user_id), fetch="all")
+
 def get_all_users_for_admin():
     return run_query("SELECT user_id, username, first_name, created_at FROM users ORDER BY created_at DESC", fetch="all")
 
@@ -363,7 +463,7 @@ def generate_html_report():
             
             body {{
                 font-family: 'Exo 2', sans-serif;
-                background: linear-gradient(135deg, #0c0c0c 0%, #1a1a2e 50%, #16213e 100%);
+                background: linear-gradient(135deg, #0a0a0a 0%, #1e1e2e 50%, #2d1b69 100%);
                 min-height: 100vh;
                 padding: 20px;
                 color: #ffffff;
@@ -376,16 +476,16 @@ def generate_html_report():
             }}
             
             .header {{
-                background: linear-gradient(135deg, rgba(102, 126, 234, 0.3) 0%, rgba(118, 75, 162, 0.3) 100%);
+                background: linear-gradient(135deg, rgba(106, 17, 203, 0.8) 0%, rgba(37, 117, 252, 0.8) 100%);
                 backdrop-filter: blur(20px);
-                padding: 50px 40px;
+                padding: 60px 40px;
                 border-radius: 30px;
                 margin-bottom: 40px;
                 text-align: center;
-                border: 2px solid rgba(255, 255, 255, 0.15);
+                border: 2px solid rgba(255, 255, 255, 0.2);
                 position: relative;
                 overflow: hidden;
-                box-shadow: 0 20px 40px rgba(0, 0, 0, 0.3);
+                box-shadow: 0 25px 50px rgba(106, 17, 203, 0.4);
             }}
             
             .header::before {{
@@ -395,8 +495,8 @@ def generate_html_report():
                 left: -50%;
                 width: 200%;
                 height: 200%;
-                background: linear-gradient(45deg, transparent, rgba(102, 126, 234, 0.2), transparent);
-                animation: shine 8s infinite linear;
+                background: linear-gradient(45deg, transparent, rgba(255, 255, 255, 0.1), transparent);
+                animation: shine 6s infinite linear;
             }}
             
             @keyframes shine {{
@@ -411,105 +511,125 @@ def generate_html_report():
             
             .header h1 {{
                 font-family: 'Orbitron', monospace;
-                font-size: 4em;
+                font-size: 4.5em;
                 margin-bottom: 20px;
-                background: linear-gradient(135deg, #667eea 0%, #764ba2 30%, #f093fb 70%, #ffd700 100%);
+                background: linear-gradient(135deg, #ff6b6b 0%, #ffd93d 25%, #6bcf7f 50%, #4d96ff 75%, #9d4dff 100%);
                 -webkit-background-clip: text;
                 -webkit-text-fill-color: transparent;
                 background-clip: text;
-                text-shadow: 0 0 50px rgba(102, 126, 234, 0.5);
+                text-shadow: 0 0 60px rgba(157, 77, 255, 0.6);
                 font-weight: 900;
-                letter-spacing: 3px;
+                letter-spacing: 4px;
+                animation: textGlow 3s ease-in-out infinite alternate;
+            }}
+            
+            @keyframes textGlow {{
+                from {{ text-shadow: 0 0 60px rgba(157, 77, 255, 0.6); }}
+                to {{ text-shadow: 0 0 80px rgba(77, 150, 255, 0.8), 0 0 100px rgba(157, 77, 255, 0.6); }}
             }}
             
             .header .subtitle {{
-                font-size: 1.5em;
-                color: #e0e0ff;
+                font-size: 1.6em;
+                color: #e6f7ff;
                 margin-bottom: 25px;
                 font-weight: 300;
-                text-shadow: 0 2px 10px rgba(0,0,0,0.5);
+                text-shadow: 0 2px 15px rgba(0,0,0,0.5);
+                animation: fadeIn 2s ease-in;
             }}
             
             .timestamp {{
                 font-family: 'Orbitron', monospace;
-                font-size: 1em;
-                color: #ffd700;
-                background: rgba(0, 0, 0, 0.4);
-                padding: 12px 20px;
-                border-radius: 25px;
+                font-size: 1.1em;
+                color: #ffd93d;
+                background: rgba(0, 0, 0, 0.5);
+                padding: 15px 25px;
+                border-radius: 30px;
                 display: inline-block;
-                border: 2px solid rgba(255, 215, 0, 0.3);
-                box-shadow: 0 5px 15px rgba(255,215,0,0.2);
+                border: 2px solid rgba(255, 217, 61, 0.4);
+                box-shadow: 0 8px 25px rgba(255,217,61,0.3);
+                animation: pulse 2s infinite;
+            }}
+            
+            @keyframes pulse {{
+                0% {{ transform: scale(1); box-shadow: 0 8px 25px rgba(255,217,61,0.3); }}
+                50% {{ transform: scale(1.05); box-shadow: 0 12px 35px rgba(255,217,61,0.5); }}
+                100% {{ transform: scale(1); box-shadow: 0 8px 25px rgba(255,217,61,0.3); }}
             }}
             
             .dashboard {{
                 display: grid;
-                grid-template-columns: 300px 1fr;
-                gap: 30px;
+                grid-template-columns: 320px 1fr;
+                gap: 35px;
                 margin-bottom: 40px;
             }}
             
             .sidebar {{
-                background: linear-gradient(135deg, rgba(255, 255, 255, 0.1) 0%, rgba(255, 255, 255, 0.05) 100%);
-                backdrop-filter: blur(15px);
-                padding: 30px;
+                background: linear-gradient(135deg, rgba(255, 255, 255, 0.15) 0%, rgba(255, 255, 255, 0.08) 100%);
+                backdrop-filter: blur(20px);
+                padding: 35px;
                 border-radius: 25px;
-                border: 1px solid rgba(255, 255, 255, 0.1);
+                border: 1px solid rgba(255, 255, 255, 0.15);
                 height: fit-content;
+                box-shadow: 0 15px 35px rgba(0, 0, 0, 0.2);
             }}
             
             .nav-item {{
                 display: flex;
                 align-items: center;
-                gap: 15px;
-                padding: 15px 20px;
-                margin-bottom: 10px;
-                border-radius: 15px;
+                gap: 18px;
+                padding: 18px 22px;
+                margin-bottom: 12px;
+                border-radius: 18px;
                 cursor: pointer;
-                transition: all 0.3s ease;
-                color: #e0e0ff;
+                transition: all 0.4s ease;
+                color: #e6f7ff;
                 text-decoration: none;
+                background: rgba(255, 255, 255, 0.05);
+                border: 1px solid rgba(255, 255, 255, 0.1);
             }}
             
             .nav-item:hover {{
-                background: rgba(102, 126, 234, 0.2);
-                transform: translateX(10px);
+                background: linear-gradient(135deg, rgba(106, 17, 203, 0.3), rgba(37, 117, 252, 0.3));
+                transform: translateX(12px) scale(1.02);
+                box-shadow: 0 8px 25px rgba(106, 17, 203, 0.3);
             }}
             
             .nav-item.active {{
-                background: linear-gradient(135deg, #667eea, #764ba2);
+                background: linear-gradient(135deg, #6a11cb, #2575fc);
                 color: white;
+                box-shadow: 0 10px 30px rgba(106, 17, 203, 0.5);
+                transform: translateX(8px);
             }}
             
             .nav-icon {{
-                font-size: 1.2em;
-                width: 25px;
+                font-size: 1.3em;
+                width: 28px;
                 text-align: center;
             }}
             
             .main-content {{
                 display: grid;
-                gap: 30px;
+                gap: 35px;
             }}
             
             .stats-grid {{
                 display: grid;
-                grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-                gap: 25px;
-                margin-bottom: 30px;
+                grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+                gap: 30px;
+                margin-bottom: 35px;
             }}
             
             .stat-card {{
-                background: linear-gradient(135deg, rgba(255, 255, 255, 0.12) 0%, rgba(255, 255, 255, 0.06) 100%);
-                backdrop-filter: blur(15px);
-                padding: 35px 30px;
+                background: linear-gradient(135deg, rgba(255, 255, 255, 0.18) 0%, rgba(255, 255, 255, 0.09) 100%);
+                backdrop-filter: blur(20px);
+                padding: 40px 35px;
                 border-radius: 25px;
                 text-align: center;
-                border: 1px solid rgba(255, 255, 255, 0.12);
-                transition: all 0.4s ease;
+                border: 1px solid rgba(255, 255, 255, 0.18);
+                transition: all 0.5s ease;
                 position: relative;
                 overflow: hidden;
-                box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+                box-shadow: 0 15px 35px rgba(0, 0, 0, 0.25);
             }}
             
             .stat-card::before {{
@@ -519,8 +639,8 @@ def generate_html_report():
                 left: -100%;
                 width: 100%;
                 height: 100%;
-                background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.1), transparent);
-                transition: left 0.6s ease;
+                background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.15), transparent);
+                transition: left 0.8s ease;
             }}
             
             .stat-card:hover::before {{
@@ -528,16 +648,16 @@ def generate_html_report():
             }}
             
             .stat-card:hover {{
-                transform: translateY(-12px) scale(1.03);
-                box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4);
-                border-color: rgba(102, 126, 234, 0.4);
+                transform: translateY(-15px) scale(1.05);
+                box-shadow: 0 25px 50px rgba(0, 0, 0, 0.4);
+                border-color: rgba(106, 17, 203, 0.5);
             }}
             
             .stat-card h3 {{
                 font-family: 'Orbitron', monospace;
-                font-size: 3.5em;
-                margin-bottom: 20px;
-                background: linear-gradient(135deg, #ffd700 0%, #ff6b6b 25%, #667eea 50%, #764ba2 75%, #f093fb 100%);
+                font-size: 4em;
+                margin-bottom: 25px;
+                background: linear-gradient(135deg, #ff6b6b 0%, #ffd93d 25%, #6bcf7f 50%, #4d96ff 75%, #9d4dff 100%);
                 -webkit-background-clip: text;
                 -webkit-text-fill-color: transparent;
                 background-clip: text;
@@ -545,23 +665,23 @@ def generate_html_report():
             }}
             
             .stat-card p {{
-                color: #e0e0ff;
-                font-size: 1.1em;
-                font-weight: 500;
+                color: #e6f7ff;
+                font-size: 1.2em;
+                font-weight: 600;
                 text-transform: uppercase;
-                letter-spacing: 1.5px;
+                letter-spacing: 2px;
             }}
             
             .section {{
-                background: linear-gradient(135deg, rgba(255, 255, 255, 0.1) 0%, rgba(255, 255, 255, 0.04) 100%);
-                backdrop-filter: blur(20px);
-                padding: 35px;
+                background: linear-gradient(135deg, rgba(255, 255, 255, 0.15) 0%, rgba(255, 255, 255, 0.07) 100%);
+                backdrop-filter: blur(25px);
+                padding: 40px;
                 border-radius: 25px;
-                margin-bottom: 35px;
-                border: 1px solid rgba(255, 255, 255, 0.1);
+                margin-bottom: 40px;
+                border: 1px solid rgba(255, 255, 255, 0.15);
                 position: relative;
                 overflow: hidden;
-                box-shadow: 0 15px 35px rgba(0, 0, 0, 0.2);
+                box-shadow: 0 20px 40px rgba(0, 0, 0, 0.25);
             }}
             
             .section::before {{
@@ -570,14 +690,14 @@ def generate_html_report():
                 top: 0;
                 left: 0;
                 right: 0;
-                height: 4px;
-                background: linear-gradient(90deg, #667eea, #764ba2, #f093fb, #ffd700);
+                height: 5px;
+                background: linear-gradient(90deg, #ff6b6b, #ffd93d, #6bcf7f, #4d96ff, #9d4dff);
             }}
             
             .section h2 {{
                 font-family: 'Orbitron', monospace;
-                font-size: 2em;
-                margin-bottom: 30px;
+                font-size: 2.2em;
+                margin-bottom: 35px;
                 color: #ffffff;
                 display: flex;
                 align-items: center;
@@ -586,86 +706,86 @@ def generate_html_report():
             }}
             
             .section h2 i {{
-                background: linear-gradient(135deg, #667eea, #764ba2);
+                background: linear-gradient(135deg, #6a11cb, #2575fc);
                 -webkit-background-clip: text;
                 -webkit-text-fill-color: transparent;
-                font-size: 1.3em;
+                font-size: 1.4em;
             }}
             
             table {{
                 width: 100%;
                 border-collapse: collapse;
-                background: rgba(255, 255, 255, 0.03);
+                background: rgba(255, 255, 255, 0.05);
                 border-radius: 20px;
                 overflow: hidden;
-                margin-top: 20px;
-                box-shadow: 0 10px 25px rgba(0, 0, 0, 0.1);
+                margin-top: 25px;
+                box-shadow: 0 15px 30px rgba(0, 0, 0, 0.15);
             }}
             
             th, td {{
-                padding: 18px 25px;
+                padding: 20px 28px;
                 text-align: left;
-                border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+                border-bottom: 1px solid rgba(255, 255, 255, 0.08);
             }}
             
             th {{
-                background: linear-gradient(135deg, rgba(102, 126, 234, 0.25) 0%, rgba(118, 75, 162, 0.25) 100%);
-                color: #ffd700;
+                background: linear-gradient(135deg, rgba(106, 17, 203, 0.3) 0%, rgba(37, 117, 252, 0.3) 100%);
+                color: #ffd93d;
                 font-weight: 700;
                 font-family: 'Orbitron', monospace;
                 text-transform: uppercase;
-                letter-spacing: 1.5px;
-                font-size: 0.95em;
+                letter-spacing: 2px;
+                font-size: 1em;
                 position: sticky;
                 top: 0;
             }}
             
             td {{
-                color: #e0e0ff;
+                color: #e6f7ff;
                 font-weight: 400;
                 transition: all 0.3s ease;
             }}
             
             tr:hover {{
-                background: rgba(255, 255, 255, 0.08);
+                background: rgba(255, 255, 255, 0.1);
                 transform: scale(1.01);
             }}
             
             .badge {{
                 display: inline-flex;
                 align-items: center;
-                gap: 6px;
-                padding: 8px 16px;
-                border-radius: 20px;
-                font-size: 0.85em;
+                gap: 8px;
+                padding: 10px 18px;
+                border-radius: 25px;
+                font-size: 0.9em;
                 font-weight: 600;
                 font-family: 'Orbitron', monospace;
-                letter-spacing: 1px;
+                letter-spacing: 1.5px;
                 text-transform: uppercase;
             }}
             
             .badge-success {{
-                background: linear-gradient(135deg, #4CAF50, #45a049);
+                background: linear-gradient(135deg, #00b894, #00a085);
                 color: white;
             }}
             
             .badge-info {{
-                background: linear-gradient(135deg, #2196F3, #1976D2);
+                background: linear-gradient(135deg, #0984e3, #0770c4);
                 color: white;
             }}
             
             .badge-warning {{
-                background: linear-gradient(135deg, #FF9800, #F57C00);
+                background: linear-gradient(135deg, #fdcb6e, #f9b745);
                 color: white;
             }}
             
             .badge-purple {{
-                background: linear-gradient(135deg, #667eea, #764ba2);
+                background: linear-gradient(135deg, #6c5ce7, #5649c8);
                 color: white;
             }}
             
             .badge-danger {{
-                background: linear-gradient(135deg, #f44336, #d32f2f);
+                background: linear-gradient(135deg, #e84393, #d63079);
                 color: white;
             }}
             
@@ -673,22 +793,22 @@ def generate_html_report():
                 display: inline-flex;
                 align-items: center;
                 justify-content: center;
-                width: 35px;
-                height: 35px;
-                border-radius: 10px;
-                margin-right: 12px;
+                width: 40px;
+                height: 40px;
+                border-radius: 12px;
+                margin-right: 15px;
                 font-weight: bold;
-                font-size: 1.1em;
+                font-size: 1.2em;
             }}
             
-            .type-text {{ background: linear-gradient(135deg, #4CAF50, #45a049); }}
-            .type-photo {{ background: linear-gradient(135deg, #2196F3, #1976D2); }}
-            .type-video {{ background: linear-gradient(135deg, #FF9800, #F57C00); }}
-            .type-document {{ background: linear-gradient(135deg, #9C27B0, #7B1FA2); }}
-            .type-voice {{ background: linear-gradient(135deg, #FF5722, #E64A19); }}
+            .type-text {{ background: linear-gradient(135deg, #00b894, #00a085); }}
+            .type-photo {{ background: linear-gradient(135deg, #0984e3, #0770c4); }}
+            .type-video {{ background: linear-gradient(135deg, #fdcb6e, #f9b745); }}
+            .type-document {{ background: linear-gradient(135deg, #6c5ce7, #5649c8); }}
+            .type-voice {{ background: linear-gradient(135deg, #e84393, #d63079); }}
             
             .user-link {{
-                color: #ffd700;
+                color: #ffd93d;
                 text-decoration: none;
                 font-weight: 600;
                 transition: all 0.3s ease;
@@ -700,48 +820,61 @@ def generate_html_report():
             }}
             
             .link-url {{
-                background: rgba(255,255,255,0.1);
-                padding: 8px 12px;
-                border-radius: 8px;
+                background: rgba(255,255,255,0.12);
+                padding: 10px 15px;
+                border-radius: 10px;
                 font-family: monospace;
-                font-size: 0.9em;
-                color: #a0a0ff;
+                font-size: 0.95em;
+                color: #b3e0ff;
                 border: 1px solid rgba(255,255,255,0.2);
             }}
             
             .message-preview {{
-                max-width: 300px;
+                max-width: 350px;
                 overflow: hidden;
                 text-overflow: ellipsis;
                 white-space: nowrap;
-                color: #b0b0ff;
+                color: #cce7ff;
             }}
             
             .conversation-view {{
-                background: rgba(255,255,255,0.05);
-                border-radius: 15px;
-                padding: 20px;
-                margin: 10px 0;
-                border-left: 4px solid #667eea;
+                background: rgba(255,255,255,0.08);
+                border-radius: 20px;
+                padding: 25px;
+                margin: 15px 0;
+                border-left: 5px solid #6a11cb;
+                animation: slideIn 0.5s ease-out;
+            }}
+            
+            @keyframes slideIn {{
+                from {{ transform: translateX(-20px); opacity: 0; }}
+                to {{ transform: translateX(0); opacity: 1; }}
             }}
             
             .message-bubble {{
-                background: rgba(102, 126, 234, 0.2);
-                border-radius: 15px;
-                padding: 15px;
-                margin: 10px 0;
-                border: 1px solid rgba(102, 126, 234, 0.3);
+                background: rgba(106, 17, 203, 0.25);
+                border-radius: 18px;
+                padding: 18px;
+                margin: 15px 0;
+                border: 1px solid rgba(106, 17, 203, 0.4);
+                animation: messageAppear 0.6s ease-out;
+            }}
+            
+            @keyframes messageAppear {{
+                from {{ transform: translateY(20px); opacity: 0; }}
+                to {{ transform: translateY(0); opacity: 1; }}
             }}
             
             .message-sender {{
                 font-weight: bold;
-                color: #ffd700;
-                margin-bottom: 5px;
+                color: #ffd93d;
+                margin-bottom: 8px;
+                font-size: 1.1em;
             }}
             
             .message-time {{
-                font-size: 0.8em;
-                color: #a0a0ff;
+                font-size: 0.85em;
+                color: #b3e0ff;
                 float: right;
             }}
             
@@ -760,103 +893,133 @@ def generate_html_report():
                 animation: fadeInUp 0.8s ease-out forwards;
             }}
             
-            .pulse {{
-                animation: pulse 3s infinite;
-            }}
-            
-            @keyframes pulse {{
-                0% {{ box-shadow: 0 0 0 0 rgba(102, 126, 234, 0.4); }}
-                70% {{ box-shadow: 0 0 0 20px rgba(102, 126, 234, 0); }}
-                100% {{ box-shadow: 0 0 0 0 rgba(102, 126, 234, 0); }}
-            }}
-            
             .floating {{
                 animation: floating 4s ease-in-out infinite;
             }}
             
             @keyframes floating {{
                 0% {{ transform: translateY(0px); }}
-                50% {{ transform: translateY(-15px); }}
+                50% {{ transform: translateY(-20px); }}
                 100% {{ transform: translateY(0px); }}
             }}
             
             .footer {{
                 text-align: center;
-                margin-top: 60px;
-                padding: 40px;
-                background: linear-gradient(135deg, rgba(102, 126, 234, 0.15) 0%, rgba(118, 75, 162, 0.15) 100%);
-                border-radius: 25px;
-                border: 1px solid rgba(255, 255, 255, 0.1);
+                margin-top: 70px;
+                padding: 50px;
+                background: linear-gradient(135deg, rgba(106, 17, 203, 0.2) 0%, rgba(37, 117, 252, 0.2) 100%);
+                border-radius: 30px;
+                border: 1px solid rgba(255, 255, 255, 0.15);
+                animation: fadeIn 2s ease-in;
+            }}
+            
+            @keyframes fadeIn {{
+                from {{ opacity: 0; }}
+                to {{ opacity: 1; }}
             }}
             
             .footer-text {{
                 font-family: 'Orbitron', monospace;
-                font-size: 1.3em;
-                color: #ffd700;
-                letter-spacing: 3px;
-                margin-bottom: 15px;
+                font-size: 1.5em;
+                color: #ffd93d;
+                letter-spacing: 4px;
+                margin-bottom: 20px;
+                text-shadow: 0 0 20px rgba(255, 217, 61, 0.5);
             }}
             
             .user-avatar {{
-                width: 45px;
-                height: 45px;
+                width: 50px;
+                height: 50px;
                 border-radius: 50%;
-                background: linear-gradient(135deg, #667eea, #764ba2);
+                background: linear-gradient(135deg, #6a11cb, #2575fc);
                 display: flex;
                 align-items: center;
                 justify-content: center;
                 font-weight: bold;
                 color: white;
-                margin-right: 12px;
-                font-size: 1.2em;
+                margin-right: 15px;
+                font-size: 1.3em;
+                box-shadow: 0 5px 15px rgba(106, 17, 203, 0.4);
             }}
             
             .progress-bar {{
                 width: 100%;
-                height: 8px;
-                background: rgba(255, 255, 255, 0.1);
-                border-radius: 4px;
+                height: 10px;
+                background: rgba(255, 255, 255, 0.15);
+                border-radius: 5px;
                 overflow: hidden;
-                margin-top: 8px;
+                margin-top: 12px;
             }}
             
             .progress-fill {{
                 height: 100%;
-                background: linear-gradient(90deg, #667eea, #764ba2, #f093fb);
-                border-radius: 4px;
-                transition: width 1s ease-in-out;
+                background: linear-gradient(90deg, #ff6b6b, #ffd93d, #6bcf7f, #4d96ff, #9d4dff);
+                border-radius: 5px;
+                transition: width 1.5s ease-in-out;
+                animation: progressAnimation 2s ease-in-out infinite alternate;
+            }}
+            
+            @keyframes progressAnimation {{
+                0% {{ background-position: 0% 50%; }}
+                100% {{ background-position: 100% 50%; }}
             }}
             
             .search-box {{
-                background: rgba(255, 255, 255, 0.08);
-                border: 1px solid rgba(255, 255, 255, 0.2);
-                border-radius: 15px;
-                padding: 15px 20px;
+                background: rgba(255, 255, 255, 0.12);
+                border: 1px solid rgba(255, 255, 255, 0.25);
+                border-radius: 18px;
+                padding: 18px 25px;
                 color: white;
-                font-size: 1em;
+                font-size: 1.1em;
                 width: 100%;
-                margin-bottom: 20px;
-                backdrop-filter: blur(10px);
-            }}
-            
-            .search-box::placeholder {{
-                color: #a0a0ff;
-            }}
-            
-            .view-conversation-btn {{
-                background: linear-gradient(135deg, #667eea, #764ba2);
-                color: white;
-                border: none;
-                padding: 8px 15px;
-                border-radius: 10px;
-                cursor: pointer;
-                font-size: 0.9em;
+                margin-bottom: 25px;
+                backdrop-filter: blur(15px);
                 transition: all 0.3s ease;
             }}
             
+            .search-box:focus {{
+                outline: none;
+                border-color: #6a11cb;
+                box-shadow: 0 0 20px rgba(106, 17, 203, 0.4);
+                transform: scale(1.02);
+            }}
+            
+            .search-box::placeholder {{
+                color: #b3e0ff;
+            }}
+            
+            .view-conversation-btn {{
+                background: linear-gradient(135deg, #6a11cb, #2575fc);
+                color: white;
+                border: none;
+                padding: 12px 20px;
+                border-radius: 15px;
+                cursor: pointer;
+                font-size: 1em;
+                transition: all 0.3s ease;
+                font-weight: 600;
+            }}
+            
             .view-conversation-btn:hover {{
-                transform: translateY(-2px);
-                box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+                transform: translateY(-3px);
+                box-shadow: 0 10px 25px rgba(106, 17, 203, 0.5);
+            }}
+            
+            .conversation-message {{
+                margin: 15px 0;
+                padding: 15px;
+                border-radius: 15px;
+                background: rgba(255, 255, 255, 0.08);
+                border-left: 4px solid #2575fc;
+            }}
+            
+            .conversation-reply {{
+                margin: 15px 0;
+                padding: 15px;
+                border-radius: 15px;
+                background: rgba(106, 17, 203, 0.15);
+                border-left: 4px solid #6a11cb;
+                margin-left: 30px;
             }}
             
             @media (max-width: 1200px) {{
@@ -871,7 +1034,7 @@ def generate_html_report():
             
             @media (max-width: 768px) {{
                 .header h1 {{
-                    font-size: 2.8em;
+                    font-size: 3em;
                 }}
                 
                 .stats-grid {{
@@ -879,12 +1042,12 @@ def generate_html_report():
                 }}
                 
                 th, td {{
-                    padding: 12px 15px;
+                    padding: 15px 20px;
                     font-size: 0.9em;
                 }}
                 
                 .section {{
-                    padding: 25px;
+                    padding: 30px;
                 }}
             }}
         </style>
@@ -896,7 +1059,7 @@ def generate_html_report():
                 <div class="header-content">
                     <h1 class="floating"><i class="fas fa-robot"></i> АДМИН ПАНЕЛЬ</h1>
                     <div class="subtitle">Расширенная система мониторинга анонимного бота</div>
-                    <div class="timestamp pulse">
+                    <div class="timestamp">
                         <i class="fas fa-clock"></i> Отчет сгенерирован: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
                     </div>
                 </div>
@@ -1016,7 +1179,7 @@ def generate_html_report():
                                             </div>
                                             <div>
                                                 <div style="font-weight: 600; font-size: 1.1em;">{username_display}</div>
-                                                <div style="font-size: 0.85em; color: #a0a0ff;">{html.escape(user[2]) if user[2] else 'No Name'}</div>
+                                                <div style="font-size: 0.85em; color: #b3e0ff;">{html.escape(user[2]) if user[2] else 'No Name'}</div>
                                             </div>
                                         </div>
                                     </td>
@@ -1035,7 +1198,7 @@ def generate_html_report():
                                         </span>
                                     </td>
                                     <td>
-                                        <button class="view-conversation-btn" onclick="viewUserConversation({user[0]})">
+                                        <button class="view-conversation-btn" onclick="viewUserConversation({user[0]}, '{username_display}')">
                                             <i class="fas fa-comments"></i> Переписка
                                         </button>
                                     </td>
@@ -1074,7 +1237,7 @@ def generate_html_report():
                                     <td><code class="link-url">{link[0]}</code></td>
                                     <td>
                                         <div style="font-weight: 600; font-size: 1.1em;">{html.escape(link[1])}</div>
-                                        <div style="font-size: 0.85em; color: #a0a0ff;">{html.escape(link[2]) if link[2] else 'Без описания'}</div>
+                                        <div style="font-size: 0.85em; color: #b3e0ff;">{html.escape(link[2]) if link[2] else 'Без описания'}</div>
                                     </td>
                                     <td>
                                         <a href="#" class="user-link">{owner}</a>
@@ -1086,8 +1249,8 @@ def generate_html_report():
                                         </span>
                                     </td>
                                     <td>
-                                        <button class="view-conversation-btn" onclick="viewLinkMessages('{link[0]}')">
-                                            <i class="fas fa-eye"></i> Сообщения
+                                        <button class="view-conversation-btn" onclick="viewLinkConversation('{link[0]}', '{html.escape(link[1])}')">
+                                            <i class="fas fa-eye"></i> Переписка
                                         </button>
                                     </td>
                                 </tr>
@@ -1177,7 +1340,7 @@ def generate_html_report():
                         <h2><i class="fas fa-comments"></i> ПРОСМОТР ПЕРЕПИСОК</h2>
                         <div class="conversation-view">
                             <h3><i class="fas fa-info-circle"></i> Выберите пользователя или ссылку для просмотра переписки</h3>
-                            <p>Используйте кнопки "Переписка" в таблице пользователей или "Сообщения" в таблице ссылок для просмотра полной истории сообщений.</p>
+                            <p>Используйте кнопки "Переписка" в таблице пользователей или "Переписка" в таблице ссылок для просмотра полной истории сообщений.</p>
                         </div>
                     </div>
                 </div>
@@ -1188,10 +1351,10 @@ def generate_html_report():
                 <div class="footer-text">
                     <i class="fas fa-robot"></i> АНОНИМНЫЙ БОТ | РАСШИРЕННАЯ СИСТЕМА МОНИТОРИНГА
                 </div>
-                <div style="margin-top: 20px; color: #a0a0ff; font-size: 1em;">
+                <div style="margin-top: 20px; color: #b3e0ff; font-size: 1.1em;">
                     <i class="fas fa-shield-alt"></i> Защищенная система | <i class="fas fa-bolt"></i> Реальное время | <i class="fas fa-chart-line"></i> Полная аналитика
                 </div>
-                <div style="margin-top: 15px; color: #ffd700; font-family: 'Orbitron', monospace; font-size: 0.9em;">
+                <div style="margin-top: 15px; color: #ffd93d; font-family: 'Orbitron', monospace; font-size: 1em;">
                     SIROK228 | POWERED BY ADVANCED AI TECHNOLOGY
                 </div>
             </div>
@@ -1231,43 +1394,106 @@ def generate_html_report():
             }}
             
             // Просмотр переписки пользователя
-            function viewUserConversation(userId) {{
+            function viewUserConversation(userId, username) {{
                 showSection('conversations');
                 const section = document.getElementById('conversations-section');
                 section.innerHTML = `
-                    <h2><i class="fas fa-comments"></i> ПЕРЕПИСКА ПОЛЬЗОВАТЕЛЯ ID: ${{userId}}</h2>
+                    <h2><i class="fas fa-comments"></i> ПЕРЕПИСКА ПОЛЬЗОВАТЕЛЯ: ${username}</h2>
                     <div class="conversation-view">
-                        <div class="message-bubble">
-                            <div class="message-sender">Пользователь ${{userId}} <span class="message-time">2024-01-01 12:00</span></div>
-                            <div>Пример сообщения от пользователя</div>
+                        <div style="text-align: center; padding: 40px;">
+                            <i class="fas fa-spinner fa-spin fa-3x" style="color: #6a11cb; margin-bottom: 20px;"></i>
+                            <h3>Загрузка переписки...</h3>
+                            <p>Идет загрузка истории сообщений для пользователя ${username}</p>
                         </div>
-                        <div class="message-bubble">
-                            <div class="message-sender">Аноним <span class="message-time">2024-01-01 12:05</span></div>
-                            <div>Пример ответа анонима</div>
+                    </div>
+                `;
+                
+                // Здесь будет AJAX запрос для загрузки реальных данных
+                setTimeout(() => {{
+                    loadUserConversation(userId, username);
+                }}, 1000);
+            }}
+            
+            function loadUserConversation(userId, username) {{
+                // В реальной реализации здесь будет AJAX запрос к серверу
+                // Сейчас используем демо-данные
+                const section = document.getElementById('conversations-section');
+                section.innerHTML = `
+                    <h2><i class="fas fa-comments"></i> ПЕРЕПИСКА ПОЛЬЗОВАТЕЛЯ: ${username}</h2>
+                    <div class="conversation-view">
+                        <div class="conversation-message">
+                            <div class="message-sender">${username} <span class="message-time">2024-01-15 14:30</span></div>
+                            <div>Привет! Это тестовое сообщение от пользователя</div>
                         </div>
-                        <button class="view-conversation-btn" onclick="showSection('users')" style="margin-top: 20px;">
+                        <div class="conversation-reply">
+                            <div class="message-sender">Аноним <span class="message-time">2024-01-15 14:35</span></div>
+                            <div>Это ответ на сообщение пользователя</div>
+                        </div>
+                        <div class="conversation-message">
+                            <div class="message-sender">${username} <span class="message-time">2024-01-15 15:00</span></div>
+                            <div>Спасибо за ответ! Как дела?</div>
+                        </div>
+                        <div class="conversation-reply">
+                            <div class="message-sender">Аноним <span class="message-time">2024-01-15 15:05</span></div>
+                            <div>Все отлично, работаю над улучшением бота!</div>
+                        </div>
+                        <button class="view-conversation-btn" onclick="showSection('users')" style="margin-top: 25px;">
                             <i class="fas fa-arrow-left"></i> Назад к пользователям
                         </button>
                     </div>
                 `;
             }}
             
-            // Просмотр сообщений ссылки
-            function viewLinkMessages(linkId) {{
+            // Просмотр переписки по ссылке
+            function viewLinkConversation(linkId, linkTitle) {{
                 showSection('conversations');
                 const section = document.getElementById('conversations-section');
                 section.innerHTML = `
-                    <h2><i class="fas fa-comments"></i> СООБЩЕНИЯ ССЫЛКИ: ${{linkId}}</h2>
+                    <h2><i class="fas fa-comments"></i> ПЕРЕПИСКА ПО ССЫЛКЕ: ${linkTitle}</h2>
                     <div class="conversation-view">
-                        <div class="message-bubble">
-                            <div class="message-sender">Аноним <span class="message-time">2024-01-01 12:00</span></div>
-                            <div>Пример анонимного сообщения через ссылку</div>
+                        <div style="text-align: center; padding: 40px;">
+                            <i class="fas fa-spinner fa-spin fa-3x" style="color: #6a11cb; margin-bottom: 20px;"></i>
+                            <h3>Загрузка переписки...</h3>
+                            <p>Идет загрузка истории сообщений для ссылки "${linkTitle}"</p>
                         </div>
-                        <div class="message-bubble">
-                            <div class="message-sender">Владелец ссылки <span class="message-time">2024-01-01 12:05</span></div>
-                            <div>Пример ответа владельца ссылки</div>
+                    </div>
+                `;
+                
+                setTimeout(() => {{
+                    loadLinkConversation(linkId, linkTitle);
+                }}, 1000);
+            }}
+            
+            function loadLinkConversation(linkId, linkTitle) {{
+                const section = document.getElementById('conversations-section');
+                section.innerHTML = `
+                    <h2><i class="fas fa-comments"></i> ПЕРЕПИСКА ПО ССЫЛКЕ: ${linkTitle}</h2>
+                    <div class="conversation-view">
+                        <div class="conversation-message">
+                            <div class="message-sender">Аноним <span class="message-time">2024-01-15 10:20</span></div>
+                            <div>Привет! Это первое анонимное сообщение через ссылку</div>
                         </div>
-                        <button class="view-conversation-btn" onclick="showSection('links')" style="margin-top: 20px;">
+                        <div class="conversation-reply">
+                            <div class="message-sender">Владелец ссылки <span class="message-time">2024-01-15 10:25</span></div>
+                            <div>Спасибо за сообщение! Рад вас слышать!</div>
+                        </div>
+                        <div class="conversation-message">
+                            <div class="message-sender">Аноним <span class="message-time">2024-01-15 11:30</span></div>
+                            <div>У меня есть вопрос по поводу функционала бота</div>
+                        </div>
+                        <div class="conversation-reply">
+                            <div class="message-sender">Владелец ссылки <span class="message-time">2024-01-15 11:35</span></div>
+                            <div>Конечно, задавайте! Постараюсь помочь с любыми вопросами</div>
+                        </div>
+                        <div class="conversation-message">
+                            <div class="message-sender">Аноним <span class="message-time">2024-01-15 12:00</span></div>
+                            <div>Как создать свою ссылку для анонимных сообщений?</div>
+                        </div>
+                        <div class="conversation-reply">
+                            <div class="message-sender">Владелец ссылки <span class="message-time">2024-01-15 12:05</span></div>
+                            <div>Просто используйте команду /start и выберите "Создать ссылку" в меню!</div>
+                        </div>
+                        <button class="view-conversation-btn" onclick="showSection('links')" style="margin-top: 25px;">
                             <i class="fas fa-arrow-left"></i> Назад к ссылкам
                         </button>
                     </div>
