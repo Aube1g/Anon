@@ -21,9 +21,6 @@ ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME")
 ADMIN_ID = int(os.environ.get("ADMIN_ID")) if os.environ.get("ADMIN_ID") else None
 ADMIN_PASSWORD = "sirok228"
 
-# --- Глобальная переменная для остановки бота ---
-bot_shutdown_requested = False
-
 # --- НАСТРОЙКИ ДЛЯ ХРАНЕНИЯ БД НА GITHUB ---
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
 GITHUB_REPO = os.environ.get("GITHUB_REPO")
@@ -1530,7 +1527,6 @@ def admin_keyboard():
         [InlineKeyboardButton("👥 Управление пользователями", callback_data="admin_users_management")],
         [InlineKeyboardButton("🎨 HTML Отчет", callback_data="admin_html_report")],
         [InlineKeyboardButton("📢 Оповещение", callback_data="admin_broadcast")],
-        [InlineKeyboardButton("🛑 Остановить бота", callback_data="admin_shutdown")],
         [InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]
     ])
 
@@ -1539,13 +1535,6 @@ def delete_confirmation_keyboard(item_type, item_id):
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("✅ Да, удалить", callback_data=f"delete_{item_type}_{item_id}")],
         [InlineKeyboardButton("❌ Отмена", callback_data="cancel_delete")]
-    ])
-
-def shutdown_confirmation_keyboard():
-    """Клавиатура подтверждения остановки бота"""
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🛑 ДА, ОСТАНОВИТЬ БОТА", callback_data="confirm_shutdown")],
-        [InlineKeyboardButton("✅ Продолжить работу", callback_data="admin_panel")]
     ])
 
 def back_to_main_keyboard():
@@ -1600,11 +1589,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user = query.from_user
         data = query.data
         is_admin = user.username == ADMIN_USERNAME or user.id == ADMIN_ID
-
-        # Проверка на остановку бота
-        if bot_shutdown_requested:
-            await query.edit_message_text("🛑 *Бот остановлен*\n\nДля перезапуска необходимо развернуть новую версию\\.", parse_mode='MarkdownV2')
-            return
 
         # Основные команды меню
         if data == "main_menu":
@@ -1772,40 +1756,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
                 else:
                     await query.answer("❌ Требуется аутентификация\\!", show_alert=True)
-            
-            elif data == "admin_shutdown":
-                if context.user_data.get('admin_authenticated'):
-                    await query.edit_message_text(
-                        "🛑 *ЭКСТРЕННАЯ ОСТАНОВКА БОТА*\n\n⚠️ *ВНИМАНИЕ\\!* Это действие полностью остановит бота\\.\n\n*Для перезапуска потребуется*\\:\n• Ручной рестарт в панели Render\n• Или новое развертывание\n\n❓ *Вы уверены, что хотите остановить бота?*",
-                        parse_mode='MarkdownV2',
-                        reply_markup=shutdown_confirmation_keyboard()
-                    )
-                else:
-                    await query.answer("❌ Требуется аутентификация\\!", show_alert=True)
-            
-            elif data == "confirm_shutdown":
-                if context.user_data.get('admin_authenticated'):
-                    # Используем глобальную переменную напрямую
-                    global bot_shutdown_requested
-                    bot_shutdown_requested = True
-                    
-                    # Создаем резервную копию перед остановкой
-                    backup_database()
-                    
-                    await query.edit_message_text(
-                        "🛑 *БОТ ОСТАНАВЛИВАЕТСЯ*\n\n📦 *Создана резервная копия базы данных*\n⚡ *Все процессы завершаются*\n\n*Бот будет полностью остановлен через несколько секунд\\.*\n\n*Для перезапуска*\\:\n1\\. Зайдите в Render Dashboard\n2\\. Найдите ваш сервис\n3\\. Нажмите \\\"Manual Restart\\\"",
-                        parse_mode='MarkdownV2'
-                    )
-                    
-                    # Даем время на отправку сообщения перед остановкой
-                    await asyncio.sleep(3)
-                    
-                    # Останавливаем бота
-                    logging.critical("🛑 BOT SHUTDOWN INITIATED BY ADMIN")
-                    os._exit(0)
-                    
-                else:
-                    await query.answer("❌ Требуется аутентификация\\!", show_alert=True)
 
     except Exception as e:
         logging.error(f"Ошибка в обработчике кнопок: {e}")
@@ -1816,11 +1766,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        # Проверка на остановку бота
-        if bot_shutdown_requested:
-            await update.message.reply_text("🛑 *Бот остановлен*\n\nДля перезапуска необходимо развернуть новую версию\\.", parse_mode='MarkdownV2')
-            return
-
         user = update.effective_user
         text = update.message.text
         save_user(user.id, user.username, user.first_name)
@@ -1896,11 +1841,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        # Проверка на остановку бота
-        if bot_shutdown_requested:
-            await update.message.reply_text("🛑 *Бот остановлен*", parse_mode='MarkdownV2')
-            return
-
         user = update.effective_user
         save_user(user.id, user.username, user.first_name)
         msg = update.message
