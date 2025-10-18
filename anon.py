@@ -19,7 +19,7 @@ from git import Repo
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME")
 ADMIN_ID = int(os.environ.get("ADMIN_ID")) if os.environ.get("ADMIN_ID") else None
-ADMIN_PASSWORD = "sirok228"  # Пароль для админки
+ADMIN_PASSWORD = "sirok228"
 
 # --- НАСТРОЙКИ ДЛЯ ХРАНЕНИЯ БД НА GITHUB ---
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
@@ -100,7 +100,6 @@ def init_db():
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         
-        # Таблица пользователей
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS users (
                 user_id INTEGER PRIMARY KEY, 
@@ -110,7 +109,6 @@ def init_db():
             )
         ''')
         
-        # Таблица ссылок
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS links (
                 link_id TEXT PRIMARY KEY, 
@@ -124,7 +122,6 @@ def init_db():
             )
         ''')
         
-        # Таблица сообщений
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS messages (
                 message_id INTEGER PRIMARY KEY AUTOINCREMENT, 
@@ -141,7 +138,6 @@ def init_db():
             )
         ''')
         
-        # Таблица ответов
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS replies (
                 reply_id INTEGER PRIMARY KEY AUTOINCREMENT, 
@@ -203,8 +199,6 @@ def save_reply(message_id, from_user_id, reply_text):
               (message_id, from_user_id, reply_text), commit=True)
     push_db_to_github(f"Save reply to message {message_id}")
 
-# --- НОВЫЕ ФУНКЦИИ ДЛЯ РАСШИРЕННОГО ПРОСМОТРА ---
-
 def get_link_info(link_id):
     return run_query('SELECT l.link_id, l.user_id, l.title, l.description, u.username FROM links l LEFT JOIN users u ON l.user_id = u.user_id WHERE l.link_id = ?', (link_id,), fetch="one")
 
@@ -212,7 +206,6 @@ def get_user_links(user_id):
     return run_query('SELECT link_id, title, description, created_at FROM links WHERE user_id = ? AND is_active = 1', (user_id,), fetch="all")
 
 def get_user_messages_with_replies(user_id, limit=50):
-    """Получает сообщения вместе с ответами"""
     return run_query('''
         SELECT m.message_id, m.message_text, m.message_type, m.file_id, m.file_size, m.file_name, 
                m.created_at, l.title as link_title, l.link_id,
@@ -224,7 +217,6 @@ def get_user_messages_with_replies(user_id, limit=50):
     ''', (user_id, limit), fetch="all")
 
 def get_message_replies(message_id):
-    """Получает все ответы на сообщение"""
     return run_query('''
         SELECT r.reply_text, r.created_at, u.username, u.first_name
         FROM replies r
@@ -257,7 +249,6 @@ def get_admin_stats():
     stats['messages'] = run_query("SELECT COUNT(*) FROM messages", fetch="one")[0]
     stats['replies'] = run_query("SELECT COUNT(*) FROM replies", fetch="one")[0]
     
-    # Статистика по типам файлов
     stats['photos'] = run_query("SELECT COUNT(*) FROM messages WHERE message_type = 'photo'", fetch="one")[0]
     stats['videos'] = run_query("SELECT COUNT(*) FROM messages WHERE message_type = 'video'", fetch="one")[0]
     stats['documents'] = run_query("SELECT COUNT(*) FROM messages WHERE message_type = 'document'", fetch="one")[0]
@@ -266,13 +257,8 @@ def get_admin_stats():
     return stats
 
 def get_all_data_for_html():
-    """Получает все данные для генерации HTML отчета"""
     data = {}
-    
-    # Основная статистика
     data['stats'] = get_admin_stats()
-    
-    # Пользователи
     data['users'] = run_query('''
         SELECT u.user_id, u.username, u.first_name, u.created_at,
                (SELECT COUNT(*) FROM links l WHERE l.user_id = u.user_id) as link_count,
@@ -282,7 +268,6 @@ def get_all_data_for_html():
         ORDER BY u.created_at DESC
     ''', fetch="all")
     
-    # Ссылки
     data['links'] = run_query('''
         SELECT l.link_id, l.title, l.description, l.created_at, l.expires_at,
                u.username, u.first_name,
@@ -293,7 +278,6 @@ def get_all_data_for_html():
         ORDER BY l.created_at DESC
     ''', fetch="all")
     
-    # Последние сообщения
     data['recent_messages'] = run_query('''
         SELECT m.message_id, m.message_text, m.message_type, m.file_size, m.file_name, m.created_at,
                u_from.username as from_username, u_from.first_name as from_first_name,
@@ -310,7 +294,6 @@ def get_all_data_for_html():
     return data
 
 def generate_html_report():
-    """Генерирует красивый HTML отчет"""
     data = get_all_data_for_html()
     
     html_content = f'''
@@ -645,7 +628,6 @@ def generate_html_report():
                 letter-spacing: 2px;
             }}
             
-            /* Специальные стили для разных секций */
             .user-avatar {{
                 width: 40px;
                 height: 40px;
@@ -675,7 +657,6 @@ def generate_html_report():
                 transition: width 0.3s ease;
             }}
             
-            /* Адаптивность */
             @media (max-width: 768px) {{
                 .header h1 {{
                     font-size: 2.5em;
@@ -698,7 +679,6 @@ def generate_html_report():
     </head>
     <body>
         <div class="container">
-            <!-- Заголовок -->
             <div class="header fade-in">
                 <div class="header-content">
                     <h1 class="floating">🛠️ АДМИН ПАНЕЛЬ</h1>
@@ -707,7 +687,6 @@ def generate_html_report():
                 </div>
             </div>
             
-            <!-- Основная статистика -->
             <div class="stats-grid">
                 <div class="stat-card fade-in">
                     <h3>{data['stats']['users']}</h3>
@@ -739,7 +718,6 @@ def generate_html_report():
                 </div>
             </div>
             
-            <!-- Статистика файлов -->
             <div class="stats-grid">
                 <div class="stat-card fade-in">
                     <h3>{data['stats']['photos']}</h3>
@@ -759,7 +737,6 @@ def generate_html_report():
                 </div>
             </div>
             
-            <!-- Пользователи -->
             <div class="section fade-in">
                 <h2>👥 АКТИВНЫЕ ПОЛЬЗОВАТЕЛИ</h2>
                 <table>
@@ -809,7 +786,6 @@ def generate_html_report():
                 </table>
             </div>
             
-            <!-- Ссылки -->
             <div class="section fade-in">
                 <h2>🔗 АКТИВНЫЕ ССЫЛКИ</h2>
                 <table>
@@ -851,7 +827,6 @@ def generate_html_report():
                 </table>
             </div>
             
-            <!-- Последние сообщения -->
             <div class="section fade-in">
                 <h2>📨 ПОСЛЕДНИЕ СООБЩЕНИЯ</h2>
                 <table>
@@ -913,7 +888,6 @@ def generate_html_report():
                 </table>
             </div>
             
-            <!-- Футер -->
             <div class="footer fade-in">
                 <div class="footer-text">
                     🟣 АНОНИМНЫЙ БОТ | СИСТЕМА УПРАВЛЕНИЯ | SIROK228
@@ -925,7 +899,6 @@ def generate_html_report():
         </div>
         
         <script>
-            // Продвинутые анимации при прокрутке
             const observerOptions = {{
                 threshold: 0.05,
                 rootMargin: '0px 0px -50px 0px'
@@ -941,7 +914,6 @@ def generate_html_report():
                 }});
             }}, observerOptions);
             
-            // Применяем к всем элементам
             document.querySelectorAll('.section, .stat-card').forEach(el => {{
                 el.style.opacity = '0';
                 el.style.transform = 'translateY(30px)';
@@ -949,7 +921,6 @@ def generate_html_report():
                 observer.observe(el);
             }});
             
-            // Анимация прогресс-баров
             setTimeout(() => {{
                 document.querySelectorAll('.progress-fill').forEach(bar => {{
                     const width = bar.style.width;
@@ -960,22 +931,6 @@ def generate_html_report():
                     }}, 100);
                 }});
             }}, 500);
-            
-            // Периодическое обновление времени
-            function updateTime() {{
-                const now = new Date();
-                const timeString = now.toLocaleString('ru-RU', {{
-                    year: 'numeric',
-                    month: '2-digit',
-                    day: '2-digit',
-                    hour: '2-digit',
-                    minute: '2-digit',
-                    second: '2-digit'
-                }});
-                document.querySelector('.timestamp:not(.pulse)').textContent = '📅 Отчет сгенерирован: ' + timeString;
-            }}
-            
-            setInterval(updateTime, 1000);
         </script>
     </body>
     </html>
@@ -986,12 +941,18 @@ def generate_html_report():
 # --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
 
 def escape_markdown(text: str) -> str:
-    if not text: return ""
-    return re.sub(r'([_*\[\]()~`>#+\-=|{}.!])', r'\\\1', str(text))
+    """Экранирует специальные символы для MarkdownV2"""
+    if not text: 
+        return ""
+    # Экранируем все специальные символы MarkdownV2
+    escape_chars = r'_*[]()~`>#+-=|{}.!'
+    return re.sub(f'([{re.escape(escape_chars)}])', r'\\\1', str(text))
 
 def format_as_quote(text: str) -> str:
-    if not text: return ""
-    return '\n'.join([f"> {line}" for line in escape_markdown(text).split('\n')])
+    if not text: 
+        return ""
+    escaped_text = escape_markdown(text)
+    return '\n'.join([f"> {line}" for line in escaped_text.split('\n')])
 
 def format_datetime(dt_string):
     """Форматирует дату-время с точностью до секунд"""
@@ -1003,7 +964,7 @@ def format_datetime(dt_string):
 
 def main_keyboard():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🟣 | 𝙰𝚞𝚋𝚎𝟷𝚐", callback_data="main_menu")],
+        [InlineKeyboardButton("🟣 Главное меню", callback_data="main_menu")],
         [InlineKeyboardButton("🔗 Мои ссылки", callback_data="my_links")],
         [InlineKeyboardButton("➕ Создать ссылку", callback_data="create_link")],
         [InlineKeyboardButton("📨 Мои сообщения", callback_data="my_messages")]
@@ -1052,14 +1013,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(text, reply_markup=main_keyboard(), parse_mode='MarkdownV2')
     except Exception as e:
         logging.error(f"Ошибка в команде start: {e}")
-        await update.message.reply_text("❌ Произошла ошибка. Попробуйте позже.")
+        await update.message.reply_text("❌ Произошла ошибка\\. Попробуйте позже\\.", parse_mode='MarkdownV2')
 
 async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик команды /admin"""
     try:
         user = update.effective_user
         if user.username == ADMIN_USERNAME or user.id == ADMIN_ID:
-            # Сбрасываем состояние аутентификации
             context.user_data['admin_authenticated'] = False
             await update.message.reply_text(
                 "🔐 *Панель администратора*\n\nВведите пароль для доступа:",
@@ -1070,7 +1030,7 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("⛔️ Доступ запрещен\\.", parse_mode='MarkdownV2')
     except Exception as e:
         logging.error(f"Ошибка в команде admin: {e}")
-        await update.message.reply_text("❌ Произошла ошибка. Попробуйте позже.")
+        await update.message.reply_text("❌ Произошла ошибка\\. Попробуйте позже\\.", parse_mode='MarkdownV2')
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -1080,20 +1040,24 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         data = query.data
         is_admin = user.username == ADMIN_USERNAME or user.id == ADMIN_ID
 
+        # Основные команды меню
         if data == "main_menu":
-            await query.edit_message_text("🎭 *Главное меню*", reply_markup=main_keyboard(), parse_mode='MarkdownV2')
+            text = "🎭 *Главное меню*"
+            await query.edit_message_text(text, reply_markup=main_keyboard(), parse_mode='MarkdownV2')
+            return
         
         elif data == "my_links":
             links = get_user_links(user.id)
             if links:
                 text = "🔗 *Ваши анонимные ссылки:*\n\n"
                 for link in links:
-                    link_url = f"https://t.me/{context.bot.username}?start={link[0]}"
+                    link_url = f"https://t\\.me/{context\\.bot\\.username}\\?start={link[0]}"
                     created = format_datetime(link[3])
                     text += f"📝 *{escape_markdown(link[1])}*\n📋 {escape_markdown(link[2])}\n🔗 `{link_url}`\n🕒 `{created}`\n\n"
                 await query.edit_message_text(text, parse_mode='MarkdownV2', reply_markup=back_to_main_keyboard())
             else:
                 await query.edit_message_text("У вас пока нет созданных ссылок\\.", reply_markup=back_to_main_keyboard(), parse_mode='MarkdownV2')
+            return
         
         elif data == "my_messages":
             messages = get_user_messages_with_replies(user.id)
@@ -1106,20 +1070,23 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     
                     preview = msg_text or f"*{msg_type}*"
                     if len(preview) > 50:
-                        preview = preview[:50] + "..."
+                        preview = preview[:50] + "\\.\\.\\."
                         
                     created_str = format_datetime(created)
-                    text += f"{type_icon} *{escape_markdown(link_title)}*\n{format_as_quote(preview)}\n🕒 `{created_str}` | 💬 Ответов: {reply_count}\n\n"
+                    text += f"{type_icon} *{escape_markdown(link_title)}*\n{format_as_quote(preview)}\n🕒 `{created_str}` \\| 💬 Ответов\\: {reply_count}\n\n"
                 
                 await query.edit_message_text(text, parse_mode='MarkdownV2', reply_markup=back_to_main_keyboard())
             else:
                 await query.edit_message_text("У вас пока нет сообщений\\.", parse_mode='MarkdownV2', reply_markup=back_to_main_keyboard())
+            return
         
         elif data == "create_link":
             context.user_data['creating_link'] = True
             context.user_data['link_stage'] = 'title'
             await query.edit_message_text("📝 Введите *название* для вашей ссылки:", parse_mode='MarkdownV2', reply_markup=back_to_main_keyboard())
+            return
         
+        # Обработка ответов на сообщения
         elif data.startswith("reply_"):
             message_id = int(data.replace("reply_", ""))
             context.user_data['replying_to'] = message_id
@@ -1133,6 +1100,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     [InlineKeyboardButton("🔙 Назад", callback_data=f"view_replies_{message_id}")]
                 ])
             )
+            return
         
         elif data.startswith("multi_reply_"):
             message_id = int(data.replace("multi_reply_", ""))
@@ -1147,6 +1115,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     [InlineKeyboardButton("🔙 Назад", callback_data=f"view_replies_{message_id}")]
                 ])
             )
+            return
         
         elif data.startswith("end_multi_reply_"):
             message_id = int(data.replace("end_multi_reply_", ""))
@@ -1155,10 +1124,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data.pop('reply_mode', None)
             context.user_data.pop('multi_reply_count', None)
             await query.edit_message_text(
-                f"✅ *Режим ответов завершен*\n\nОтправлено ответов: {count}\n\nОтветы доставлены анонимно\\!",
+                f"✅ *Режим ответов завершен*\n\nОтправлено ответов\\: {count}\n\nОтветы доставлены анонимно\\!",
                 parse_mode='MarkdownV2',
                 reply_markup=message_details_keyboard(message_id)
             )
+            return
         
         elif data.startswith("continue_reply_"):
             message_id = int(data.replace("continue_reply_", ""))
@@ -1166,13 +1136,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data['reply_mode'] = 'multi'
             current_count = context.user_data.get('multi_reply_count', 0)
             await query.edit_message_text(
-                f"🔄 *Продолжение ответов на сообщение \\#{message_id}*\n\nТекущее количество ответов: {current_count}\n\nВведите следующий ответ:",
+                f"🔄 *Продолжение ответов на сообщение \\#{message_id}*\n\nТекущее количество ответов\\: {current_count}\n\nВведите следующий ответ:",
                 parse_mode='MarkdownV2',
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("⏹️ Завершить ответы", callback_data=f"end_multi_reply_{message_id}")],
                     [InlineKeyboardButton("🔙 Назад", callback_data=f"view_replies_{message_id}")]
                 ])
             )
+            return
         
         elif data.startswith("view_replies_"):
             message_id = int(data.replace("view_replies_", ""))
@@ -1191,6 +1162,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     parse_mode='MarkdownV2', 
                     reply_markup=message_details_keyboard(message_id)
                 )
+            return
 
         # АДМИН ПАНЕЛЬ
         if is_admin:
@@ -1206,47 +1178,44 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     text = f"""📊 *Статистика бота:*
 
 👥 *Пользователи:*
-• Всего пользователей: {stats['users']}
-• Активных ссылок: {stats['links']}
+• Всего пользователей\\: {stats['users']}
+• Активных ссылок\\: {stats['links']}
 
 💌 *Сообщения:*
-• Всего сообщений: {stats['messages']}
-• Ответов: {stats['replies']}
+• Всего сообщений\\: {stats['messages']}
+• Ответов\\: {stats['replies']}
 
 📁 *Файлы:*
-• Фотографий: {stats['photos']}
-• Видео: {stats['videos']}
-• Документов: {stats['documents']}
-• Голосовых: {stats['voice']}"""
+• Фотографий\\: {stats['photos']}
+• Видео\\: {stats['videos']}
+• Документов\\: {stats['documents']}
+• Голосовых\\: {stats['voice']}"""
                     await query.edit_message_text(text, parse_mode='MarkdownV2', reply_markup=admin_keyboard())
                 else:
-                    await query.answer("❌ Требуется аутентификация!", show_alert=True)
+                    await query.answer("❌ Требуется аутентификация\\!", show_alert=True)
             
             elif data == "admin_history":
                 if context.user_data.get('admin_authenticated'):
                     users = get_all_users_for_admin()
                     if users:
-                        kb = [[InlineKeyboardButton(f"👤 {u[1] or u[2] or f'ID: {u[0]}'}", callback_data=f"admin_view_user:{u[0]}")] for u in users[:20]]
+                        kb = [[InlineKeyboardButton(f"👤 {u[1] or u[2] or f'ID\\: {u[0]}'}", callback_data=f"admin_view_user:{u[0]}")] for u in users[:20]]
                         kb.append([InlineKeyboardButton("🔙 Назад", callback_data="admin_panel")])
                         await query.edit_message_text("👥 *Выберите пользователя для просмотра истории:*", reply_markup=InlineKeyboardMarkup(kb))
                     else:
                         await query.edit_message_text("Пользователей не найдено\\.", parse_mode='MarkdownV2', reply_markup=admin_keyboard())
                 else:
-                    await query.answer("❌ Требуется аутентификация!", show_alert=True)
+                    await query.answer("❌ Требуется аутентификация\\!", show_alert=True)
             
             elif data == "admin_html_report":
                 if context.user_data.get('admin_authenticated'):
-                    await query.edit_message_text("🔄 *Генерация HTML отчета...*", parse_mode='MarkdownV2')
+                    await query.edit_message_text("🔄 *Генерация HTML отчета\\.\\.\\.*", parse_mode='MarkdownV2')
                     
-                    # Генерируем HTML отчет
                     html_content = generate_html_report()
                     
-                    # Сохраняем временный файл
                     report_path = "/tmp/admin_report.html"
                     with open(report_path, 'w', encoding='utf-8') as f:
                         f.write(html_content)
                     
-                    # Отправляем файл
                     with open(report_path, 'rb') as f:
                         await query.message.reply_document(
                             document=f,
@@ -1257,7 +1226,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     
                     await query.edit_message_text("✅ *HTML отчет сгенерирован и отправлен\\!*\n\nПроверьте файл выше\\!", parse_mode='MarkdownV2', reply_markup=admin_keyboard())
                 else:
-                    await query.answer("❌ Требуется аутентификация!", show_alert=True)
+                    await query.answer("❌ Требуется аутентификация\\!", show_alert=True)
             
             elif data == "admin_broadcast":
                 if context.user_data.get('admin_authenticated'):
@@ -1268,7 +1237,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         reply_markup=back_to_admin_keyboard()
                     )
                 else:
-                    await query.answer("❌ Требуется аутентификация!", show_alert=True)
+                    await query.answer("❌ Требуется аутентификация\\!", show_alert=True)
             
             elif data.startswith("admin_view_user:"):
                 if context.user_data.get('admin_authenticated'):
@@ -1279,41 +1248,40 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         await query.edit_message_text("_История сообщений не найдена\\._", parse_mode='MarkdownV2', reply_markup=admin_keyboard())
                         return
                     
-                    await query.edit_message_text(f"📜 *История переписки для пользователя ID {user_id}*\n*Всего сообщений: {len(history)}*", parse_mode='MarkdownV2')
+                    await query.edit_message_text(f"📜 *История переписки для пользователя ID {user_id}*\n*Всего сообщений\\: {len(history)}*", parse_mode='MarkdownV2')
                     
-                    # Отправляем первые 5 сообщений для примера
                     for i, msg in enumerate(history[:5]):
                         msg_id, msg_text, msg_type, file_id, file_size, file_name, created, from_user, from_name, to_user, to_name, link_title = msg
                         
                         created_str = format_datetime(created)
-                        header = f"*#{i+1}* | 🕒 `{created_str}`\n"
-                        header += f"*От:* {escape_markdown(from_user or from_name or 'Аноним')}\n"
-                        header += f"*Кому:* {escape_markdown(to_user or to_name or 'Аноним')}\n"
-                        header += f"*Ссылка:* {escape_markdown(link_title or 'N/A')}\n"
+                        header = f"*#{i+1}* \\| 🕒 `{created_str}`\n"
+                        header += f"*От\\:* {escape_markdown(from_user or from_name or 'Аноним')}\n"
+                        header += f"*Кому\\:* {escape_markdown(to_user or to_name or 'Аноним')}\n"
+                        header += f"*Ссылка\\:* {escape_markdown(link_title or 'N/A')}\n"
                         
                         if msg_type == 'text':
                             await query.message.reply_text(f"{header}\n{format_as_quote(msg_text)}", parse_mode='MarkdownV2')
                         else:
-                            file_info = f"\n*Тип:* {msg_type}"
+                            file_info = f"\n*Тип\\:* {msg_type}"
                             if file_size:
                                 file_info += f" \\({(file_size or 0) // 1024} KB\\)"
                             if file_name:
-                                file_info += f"\n*Файл:* {escape_markdown(file_name)}"
+                                file_info += f"\n*Файл\\:* {escape_markdown(file_name)}"
                             
                             caption = f"{header}{file_info}"
-                            await query.message.reply_text(f"{caption}\n\n*Содержание:* {format_as_quote(msg_text)}", parse_mode='MarkdownV2')
+                            await query.message.reply_text(f"{caption}\n\n*Содержание\\:* {format_as_quote(msg_text)}", parse_mode='MarkdownV2')
                     
                     if len(history) > 5:
-                        await query.message.reply_text(f"*... и ещё {len(history) - 5} сообщений*\n_Для полного просмотра используйте HTML отчет_", parse_mode='MarkdownV2')
+                        await query.message.reply_text(f"*\\\\.\\\\.\\\\. и ещё {len(history) - 5} сообщений*\n_Для полного просмотра используйте HTML отчет_", parse_mode='MarkdownV2')
                     
                     await query.message.reply_text("🛠️ *Панель администратора*", reply_markup=admin_keyboard(), parse_mode='MarkdownV2')
                 else:
-                    await query.answer("❌ Требуется аутентификация!", show_alert=True)
+                    await query.answer("❌ Требуется аутентификация\\!", show_alert=True)
 
     except Exception as e:
         logging.error(f"Ошибка в обработчике кнопок: {e}")
         try:
-            await query.edit_message_text("❌ Произошла ошибка. Попробуйте позже.", reply_markup=main_keyboard())
+            await query.edit_message_text("❌ Произошла ошибка\\. Попробуйте позже\\.", reply_markup=main_keyboard(), parse_mode='MarkdownV2')
         except:
             pass
 
@@ -1328,7 +1296,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if text == ADMIN_PASSWORD and is_admin:
             context.user_data['admin_authenticated'] = True
             await update.message.reply_text(
-                "✅ *Пароль принят! Добро пожаловать в админ-панель.*", 
+                "✅ *Пароль принят\\! Добро пожаловать в админ\\-панель\\.*", 
                 reply_markup=admin_keyboard(), 
                 parse_mode='MarkdownV2'
             )
@@ -1346,7 +1314,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await context.bot.send_message(original_msg[0], reply_notification, parse_mode='MarkdownV2')
                 except Exception as e:
                     logging.error(f"Failed to send reply notification: {e}")
-            await update.message.reply_text("✅ Ваш ответ отправлен анонимно!", reply_markup=main_keyboard())
+            await update.message.reply_text("✅ Ваш ответ отправлен анонимно\\!", reply_markup=main_keyboard(), parse_mode='MarkdownV2')
             return
 
         # Ответ на сообщение (режим нескольких ответов)
@@ -1354,7 +1322,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             msg_id = context.user_data['replying_to']
             save_reply(msg_id, user.id, text)
             
-            # Увеличиваем счетчик ответов
             current_count = context.user_data.get('multi_reply_count', 0)
             context.user_data['multi_reply_count'] = current_count + 1
             
@@ -1389,7 +1356,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 context.user_data.pop('creating_link')
                 context.user_data.pop('link_stage')
                 link_id = create_anon_link(user.id, title, text)
-                link_url = f"https://t.me/{context.bot.username}?start={link_id}"
+                link_url = f"https://t\\.me/{context\\.bot\\.username}\\?start={link_id}"
                 await update.message.reply_text(
                     f"✅ *Ссылка создана\\!*\n\n📝 *{escape_markdown(title)}*\n📋 {escape_markdown(text)}\n\n🔗 `{link_url}`\n\nПоделитесь ей, чтобы получать сообщения\\!",
                     parse_mode='MarkdownV2', 
@@ -1410,7 +1377,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     except Exception as e:
                         logging.warning(f"Broadcast failed for user {u[0]}: {e}")
             await update.message.reply_text(
-                f"📢 *Рассылка завершена*\n\nОтправлено: {sent_count}/{len(users) if users else 0} пользователям\\.",
+                f"📢 *Рассылка завершена*\n\nОтправлено\\: {sent_count}/{len(users) if users else 0} пользователям\\.",
                 parse_mode='MarkdownV2', 
                 reply_markup=admin_keyboard()
             )
@@ -1428,18 +1395,17 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 except Exception as e:
                     logging.error(f"Failed to send message notification: {e}")
                 
-                # Уведомление админу
-                admin_notification = f"📨 *Новое сообщение*\nОт: {escape_markdown(user.username or user.first_name or 'Аноним')} -> Кому: {escape_markdown(link_info[4] or 'Аноним')}\n\n{format_as_quote(text)}"
+                admin_notification = f"📨 *Новое сообщение*\nОт\\: {escape_markdown(user.username or user.first_name or 'Аноним')} \\> Кому\\: {escape_markdown(link_info[4] or 'Аноним')}\n\n{format_as_quote(text)}"
                 await context.bot.send_message(ADMIN_ID, admin_notification, parse_mode='MarkdownV2')
                 
-                await update.message.reply_text("✅ Ваше сообщение отправлено анонимно!", reply_markup=main_keyboard())
+                await update.message.reply_text("✅ Ваше сообщение отправлено анонимно\\!", reply_markup=main_keyboard(), parse_mode='MarkdownV2')
             return
 
-        await update.message.reply_text("Используйте кнопки для навигации.", reply_markup=main_keyboard())
+        await update.message.reply_text("Используйте кнопки для навигации\\.", reply_markup=main_keyboard(), parse_mode='MarkdownV2')
 
     except Exception as e:
         logging.error(f"Ошибка в обработчике текста: {e}")
-        await update.message.reply_text("❌ Произошла ошибка. Попробуйте позже.")
+        await update.message.reply_text("❌ Произошла ошибка\\. Попробуйте позже\\.", parse_mode='MarkdownV2')
 
 async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -1470,7 +1436,6 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if link_info:
                 msg_id = save_message(link_id, user.id, link_info[1], caption, msg_type, file_id, file_size, file_name)
                 
-                # Подготовка информации о файле
                 file_info = ""
                 if file_size:
                     file_info = f" \\({(file_size or 0) // 1024} KB\\)"
@@ -1478,7 +1443,7 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     file_info += f"\n📄 `{escape_markdown(file_name)}`"
                 
                 user_caption = f"📨 *Новый анонимный {msg_type}*{file_info}\n\n{format_as_quote(caption)}"
-                admin_caption = f"📨 *Новый {msg_type}*\nОт: {escape_markdown(user.username or user.first_name or 'Аноним')} -> Кому: {escape_markdown(link_info[4] or 'Аноним')}{file_info}\n\n{format_as_quote(caption)}"
+                admin_caption = f"📨 *Новый {msg_type}*\nОт\\: {escape_markdown(user.username or user.first_name or 'Аноним')} \\> Кому\\: {escape_markdown(link_info[4] or 'Аноним')}{file_info}\n\n{format_as_quote(caption)}"
                 
                 try:
                     if msg_type == 'photo': 
@@ -1505,11 +1470,11 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 except Exception as e: 
                     logging.error(f"Failed to send media to admin: {e}")
                 
-                await update.message.reply_text("✅ Ваше медиа отправлено анонимно!", reply_markup=main_keyboard())
+                await update.message.reply_text("✅ Ваше медиа отправлено анонимно\\!", reply_markup=main_keyboard(), parse_mode='MarkdownV2')
 
     except Exception as e:
         logging.error(f"Ошибка в обработчике медиа: {e}")
-        await update.message.reply_text("❌ Произошла ошибка при отправке медиа.")
+        await update.message.reply_text("❌ Произошла ошибка при отправке медиа\\.", parse_mode='MarkdownV2')
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик ошибок."""
@@ -1524,22 +1489,18 @@ def main():
         logging.critical("КРИТИЧЕСКАЯ ОШИБКА: Не установлены все переменные окружения")
         return
     
-    # Настройка репозитория и БД
     setup_repo()
     init_db()
     
-    # Создание приложения
     application = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
     
-    # Добавление обработчиков
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("admin", admin_command))  # Исправленный обработчик
+    application.add_handler(CommandHandler("admin", admin_command))
     application.add_handler(CallbackQueryHandler(button_handler))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     media_filters = filters.PHOTO | filters.VIDEO | filters.VOICE | filters.Document.ALL
     application.add_handler(MessageHandler(media_filters & ~filters.COMMAND, handle_media))
     
-    # Добавление обработчика ошибок
     application.add_error_handler(error_handler)
     
     logging.info("Бот запускается...")
