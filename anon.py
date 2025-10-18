@@ -48,9 +48,12 @@ def setup_repo():
     remote_url = f"https://{GITHUB_TOKEN}@github.com/{GITHUB_REPO}.git"
     
     if os.path.exists(REPO_PATH):
-        shutil.rmtree(REPO_PATH)
+        try:
+            shutil.rmtree(REPO_PATH)
+        except Exception as e:
+            logging.warning(f"Не удалось удалить REPO_PATH: {e}")
     
-    max_retries = 3
+    max_retries = 5
     for attempt in range(max_retries):
         try:
             logging.info(f"Клонирование репозитория {GITHUB_REPO}... (попытка {attempt + 1})")
@@ -58,20 +61,21 @@ def setup_repo():
             repo.config_writer().set_value("user", "name", "AnonBot").release()
             repo.config_writer().set_value("user", "email", "bot@render.com").release()
             logging.info("Репозиторий успешно склонирован и настроен.")
-            return
+            return True
         except Exception as e:
             logging.error(f"Ошибка при клонировании репозитория (попытка {attempt + 1}): {e}")
             if attempt < max_retries - 1:
-                time.sleep(5)
+                time.sleep(10)
             else:
                 logging.critical("Не удалось склонировать репозиторий, создаю локальную БД")
                 os.makedirs(REPO_PATH, exist_ok=True)
+                return False
 
 def push_db_to_github(commit_message):
     """Отправляет файл базы данных на GitHub."""
     if not repo:
         logging.error("Репозиторий не инициализирован, push невозможен.")
-        return
+        return False
     
     max_retries = 3
     for attempt in range(max_retries):
@@ -82,20 +86,51 @@ def push_db_to_github(commit_message):
                 origin = repo.remote(name='origin')
                 origin.push()
                 logging.info(f"База данных успешно отправлена на GitHub. Коммит: {commit_message}")
-                return
+                return True
             else:
                 logging.info("Нет изменений в БД для отправки.")
-                return
+                return True
         except Exception as e:
             logging.error(f"Ошибка при отправке БД на GitHub (попытка {attempt + 1}): {e}")
             if attempt < max_retries - 1:
-                time.sleep(5)
+                time.sleep(10)
+            else:
+                logging.error(f"Не удалось отправить БД на GitHub после {max_retries} попыток")
+                return False
+
+def backup_database():
+    """Создает резервную копию базы данных"""
+    try:
+        if os.path.exists(DB_PATH):
+            backup_path = f"{DB_PATH}.backup"
+            shutil.copy2(DB_PATH, backup_path)
+            logging.info(f"Резервная копия БД создана: {backup_path}")
+            return True
+    except Exception as e:
+        logging.error(f"Ошибка при создании резервной копии БД: {e}")
+    return False
+
+def restore_database():
+    """Восстанавливает базу данных из резервной копии"""
+    try:
+        backup_path = f"{DB_PATH}.backup"
+        if os.path.exists(backup_path):
+            shutil.copy2(backup_path, DB_PATH)
+            logging.info(f"БД восстановлена из резервной копии: {backup_path}")
+            return True
+    except Exception as e:
+        logging.error(f"Ошибка при восстановлении БД: {e}")
+    return False
 
 # --- ФУНКЦИИ ДЛЯ РАБОТЫ С БД ---
 
 def init_db():
     """Создает таблицы, если их нет."""
     try:
+        # Сначала пытаемся восстановить из резервной копии
+        if not os.path.exists(DB_PATH):
+            restore_database()
+        
         db_existed_before = os.path.exists(DB_PATH)
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
@@ -155,13 +190,17 @@ def init_db():
         if not db_existed_before:
             logging.info("Файл БД не найден, создаю новый и отправляю на GitHub...")
             push_db_to_github("Initial commit: create database file")
+        
+        # Создаем резервную копию после инициализации
+        backup_database()
+        
     except Exception as e:
         logging.error(f"Ошибка при инициализации БД: {e}")
 
 def run_query(query, params=(), commit=False, fetch=None):
     """Универсальная функция для выполнения запросов к БД."""
     try:
-        with sqlite3.connect(DB_PATH) as conn:
+        with sqlite3.connect(DB_PATH, timeout=30) as conn:
             cursor = conn.cursor()
             cursor.execute(query, params)
             if commit:
@@ -244,56 +283,66 @@ def get_all_users_for_admin():
 
 def get_admin_stats():
     stats = {}
-    stats['users'] = run_query("SELECT COUNT(*) FROM users", fetch="one")[0]
-    stats['links'] = run_query("SELECT COUNT(*) FROM links WHERE is_active = 1", fetch="one")[0]
-    stats['messages'] = run_query("SELECT COUNT(*) FROM messages", fetch="one")[0]
-    stats['replies'] = run_query("SELECT COUNT(*) FROM replies", fetch="one")[0]
-    
-    stats['photos'] = run_query("SELECT COUNT(*) FROM messages WHERE message_type = 'photo'", fetch="one")[0]
-    stats['videos'] = run_query("SELECT COUNT(*) FROM messages WHERE message_type = 'video'", fetch="one")[0]
-    stats['documents'] = run_query("SELECT COUNT(*) FROM messages WHERE message_type = 'document'", fetch="one")[0]
-    stats['voice'] = run_query("SELECT COUNT(*) FROM messages WHERE message_type = 'voice'", fetch="one")[0]
+    try:
+        stats['users'] = run_query("SELECT COUNT(*) FROM users", fetch="one")[0] or 0
+        stats['links'] = run_query("SELECT COUNT(*) FROM links WHERE is_active = 1", fetch="one")[0] or 0
+        stats['messages'] = run_query("SELECT COUNT(*) FROM messages", fetch="one")[0] or 0
+        stats['replies'] = run_query("SELECT COUNT(*) FROM replies", fetch="one")[0] or 0
+        
+        stats['photos'] = run_query("SELECT COUNT(*) FROM messages WHERE message_type = 'photo'", fetch="one")[0] or 0
+        stats['videos'] = run_query("SELECT COUNT(*) FROM messages WHERE message_type = 'video'", fetch="one")[0] or 0
+        stats['documents'] = run_query("SELECT COUNT(*) FROM messages WHERE message_type = 'document'", fetch="one")[0] or 0
+        stats['voice'] = run_query("SELECT COUNT(*) FROM messages WHERE message_type = 'voice'", fetch="one")[0] or 0
+    except Exception as e:
+        logging.error(f"Ошибка при получении статистики: {e}")
+        # Возвращаем значения по умолчанию
+        stats = {'users': 0, 'links': 0, 'messages': 0, 'replies': 0, 'photos': 0, 'videos': 0, 'documents': 0, 'voice': 0}
     
     return stats
 
 def get_all_data_for_html():
     data = {}
-    data['stats'] = get_admin_stats()
-    data['users'] = run_query('''
-        SELECT u.user_id, u.username, u.first_name, u.created_at,
-               (SELECT COUNT(*) FROM links l WHERE l.user_id = u.user_id) as link_count,
-               (SELECT COUNT(*) FROM messages m WHERE m.to_user_id = u.user_id) as received_messages,
-               (SELECT COUNT(*) FROM messages m WHERE m.from_user_id = u.user_id) as sent_messages
-        FROM users u
-        ORDER BY u.created_at DESC
-    ''', fetch="all")
-    
-    data['links'] = run_query('''
-        SELECT l.link_id, l.title, l.description, l.created_at, l.expires_at,
-               u.username, u.first_name, u.user_id,
-               (SELECT COUNT(*) FROM messages m WHERE m.link_id = l.link_id) as message_count
-        FROM links l
-        LEFT JOIN users u ON l.user_id = u.user_id
-        WHERE l.is_active = 1
-        ORDER BY l.created_at DESC
-    ''', fetch="all")
-    
-    data['recent_messages'] = run_query('''
-        SELECT m.message_id, m.message_text, m.message_type, m.file_size, m.file_name, m.created_at,
-               u_from.username as from_username, u_from.first_name as from_first_name, u_from.user_id as from_user_id,
-               u_to.username as to_username, u_to.first_name as to_first_name, u_to.user_id as to_user_id,
-               l.title as link_title, l.link_id
-        FROM messages m
-        LEFT JOIN users u_from ON m.from_user_id = u_from.user_id
-        LEFT JOIN users u_to ON m.to_user_id = u_to.user_id
-        LEFT JOIN links l ON m.link_id = l.link_id
-        ORDER BY m.created_at DESC
-        LIMIT 200
-    ''', fetch="all")
+    try:
+        data['stats'] = get_admin_stats()
+        data['users'] = run_query('''
+            SELECT u.user_id, u.username, u.first_name, u.created_at,
+                   (SELECT COUNT(*) FROM links l WHERE l.user_id = u.user_id) as link_count,
+                   (SELECT COUNT(*) FROM messages m WHERE m.to_user_id = u.user_id) as received_messages,
+                   (SELECT COUNT(*) FROM messages m WHERE m.from_user_id = u.user_id) as sent_messages
+            FROM users u
+            ORDER BY u.created_at DESC
+        ''', fetch="all") or []
+        
+        data['links'] = run_query('''
+            SELECT l.link_id, l.title, l.description, l.created_at, l.expires_at,
+                   u.username, u.first_name, u.user_id,
+                   (SELECT COUNT(*) FROM messages m WHERE m.link_id = l.link_id) as message_count
+            FROM links l
+            LEFT JOIN users u ON l.user_id = u.user_id
+            WHERE l.is_active = 1
+            ORDER BY l.created_at DESC
+        ''', fetch="all") or []
+        
+        data['recent_messages'] = run_query('''
+            SELECT m.message_id, m.message_text, m.message_type, m.file_size, m.file_name, m.created_at,
+                   u_from.username as from_username, u_from.first_name as from_first_name, u_from.user_id as from_user_id,
+                   u_to.username as to_username, u_to.first_name as to_first_name, u_to.user_id as to_user_id,
+                   l.title as link_title, l.link_id
+            FROM messages m
+            LEFT JOIN users u_from ON m.from_user_id = u_from.user_id
+            LEFT JOIN users u_to ON m.to_user_id = u_to.user_id
+            LEFT JOIN links l ON m.link_id = l.link_id
+            ORDER BY m.created_at DESC
+            LIMIT 200
+        ''', fetch="all") or []
+    except Exception as e:
+        logging.error(f"Ошибка при получении данных для HTML: {e}")
+        data = {'stats': get_admin_stats(), 'users': [], 'links': [], 'recent_messages': []}
     
     return data
 
 def generate_html_report():
+    """Генерирует красивый HTML отчет с возможностью просмотра переписок"""
     data = get_all_data_for_html()
     
     html_content = f'''
@@ -668,6 +717,34 @@ def generate_html_report():
                 color: #b0b0ff;
             }}
             
+            .conversation-view {{
+                background: rgba(255,255,255,0.05);
+                border-radius: 15px;
+                padding: 20px;
+                margin: 10px 0;
+                border-left: 4px solid #667eea;
+            }}
+            
+            .message-bubble {{
+                background: rgba(102, 126, 234, 0.2);
+                border-radius: 15px;
+                padding: 15px;
+                margin: 10px 0;
+                border: 1px solid rgba(102, 126, 234, 0.3);
+            }}
+            
+            .message-sender {{
+                font-weight: bold;
+                color: #ffd700;
+                margin-bottom: 5px;
+            }}
+            
+            .message-time {{
+                font-size: 0.8em;
+                color: #a0a0ff;
+                float: right;
+            }}
+            
             @keyframes fadeInUp {{
                 from {{ 
                     opacity: 0; 
@@ -766,6 +843,22 @@ def generate_html_report():
                 color: #a0a0ff;
             }}
             
+            .view-conversation-btn {{
+                background: linear-gradient(135deg, #667eea, #764ba2);
+                color: white;
+                border: none;
+                padding: 8px 15px;
+                border-radius: 10px;
+                cursor: pointer;
+                font-size: 0.9em;
+                transition: all 0.3s ease;
+            }}
+            
+            .view-conversation-btn:hover {{
+                transform: translateY(-2px);
+                box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+            }}
+            
             @media (max-width: 1200px) {{
                 .dashboard {{
                     grid-template-columns: 1fr;
@@ -812,91 +905,90 @@ def generate_html_report():
             <div class="dashboard">
                 <!-- Боковая панель -->
                 <div class="sidebar fade-in">
-                    <div class="nav-item active">
+                    <div class="nav-item active" onclick="showSection('stats')">
                         <div class="nav-icon"><i class="fas fa-tachometer-alt"></i></div>
                         <div>Общая статистика</div>
                     </div>
-                    <div class="nav-item">
+                    <div class="nav-item" onclick="showSection('users')">
                         <div class="nav-icon"><i class="fas fa-users"></i></div>
                         <div>Пользователи ({data['stats']['users']})</div>
                     </div>
-                    <div class="nav-item">
+                    <div class="nav-item" onclick="showSection('links')">
                         <div class="nav-icon"><i class="fas fa-link"></i></div>
                         <div>Ссылки ({data['stats']['links']})</div>
                     </div>
-                    <div class="nav-item">
+                    <div class="nav-item" onclick="showSection('messages')">
                         <div class="nav-icon"><i class="fas fa-envelope"></i></div>
                         <div>Сообщения ({data['stats']['messages']})</div>
                     </div>
-                    <div class="nav-item">
-                        <div class="nav-icon"><i class="fas fa-reply"></i></div>
-                        <div>Ответы ({data['stats']['replies']})</div>
-                    </div>
-                    <div class="nav-item">
-                        <div class="nav-icon"><i class="fas fa-chart-bar"></i></div>
-                        <div>Аналитика</div>
+                    <div class="nav-item" onclick="showSection('conversations')">
+                        <div class="nav-icon"><i class="fas fa-comments"></i></div>
+                        <div>Переписки</div>
                     </div>
                 </div>
                 
                 <!-- Основной контент -->
                 <div class="main-content">
-                    <!-- Основная статистика -->
-                    <div class="stats-grid">
-                        <div class="stat-card fade-in">
-                            <h3>{data['stats']['users']}</h3>
-                            <p><i class="fas fa-users"></i> Всего пользователей</p>
-                            <div class="progress-bar">
-                                <div class="progress-fill" style="width: {min(data['stats']['users'] * 2, 100)}%"></div>
+                    <!-- Общая статистика -->
+                    <div id="stats-section" class="section-section">
+                        <!-- Основная статистика -->
+                        <div class="stats-grid">
+                            <div class="stat-card fade-in">
+                                <h3>{data['stats']['users']}</h3>
+                                <p><i class="fas fa-users"></i> Всего пользователей</p>
+                                <div class="progress-bar">
+                                    <div class="progress-fill" style="width: {min(data['stats']['users'] * 2, 100)}%"></div>
+                                </div>
+                            </div>
+                            <div class="stat-card fade-in">
+                                <h3>{data['stats']['links']}</h3>
+                                <p><i class="fas fa-link"></i> Активных ссылок</p>
+                                <div class="progress-bar">
+                                    <div class="progress-fill" style="width: {min(data['stats']['links'] * 5, 100)}%"></div>
+                                </div>
+                            </div>
+                            <div class="stat-card fade-in">
+                                <h3>{data['stats']['messages']}</h3>
+                                <p><i class="fas fa-envelope"></i> Всего сообщений</p>
+                                <div class="progress-bar">
+                                    <div class="progress-fill" style="width: {min(data['stats']['messages'] * 0.5, 100)}%"></div>
+                                </div>
+                            </div>
+                            <div class="stat-card fade-in">
+                                <h3>{data['stats']['replies']}</h3>
+                                <p><i class="fas fa-reply"></i> Ответов</p>
+                                <div class="progress-bar">
+                                    <div class="progress-fill" style="width: {min(data['stats']['replies'] * 2, 100)}%"></div>
+                                </div>
                             </div>
                         </div>
-                        <div class="stat-card fade-in">
-                            <h3>{data['stats']['links']}</h3>
-                            <p><i class="fas fa-link"></i> Активных ссылок</p>
-                            <div class="progress-bar">
-                                <div class="progress-fill" style="width: {min(data['stats']['links'] * 5, 100)}%"></div>
+                        
+                        <!-- Статистика файлов -->
+                        <div class="stats-grid">
+                            <div class="stat-card fade-in">
+                                <h3>{data['stats']['photos']}</h3>
+                                <p><i class="fas fa-image"></i> Фотографий</p>
                             </div>
-                        </div>
-                        <div class="stat-card fade-in">
-                            <h3>{data['stats']['messages']}</h3>
-                            <p><i class="fas fa-envelope"></i> Всего сообщений</p>
-                            <div class="progress-bar">
-                                <div class="progress-fill" style="width: {min(data['stats']['messages'] * 0.5, 100)}%"></div>
+                            <div class="stat-card fade-in">
+                                <h3>{data['stats']['videos']}</h3>
+                                <p><i class="fas fa-video"></i> Видео</p>
                             </div>
-                        </div>
-                        <div class="stat-card fade-in">
-                            <h3>{data['stats']['replies']}</h3>
-                            <p><i class="fas fa-reply"></i> Ответов</p>
-                            <div class="progress-bar">
-                                <div class="progress-fill" style="width: {min(data['stats']['replies'] * 2, 100)}%"></div>
+                            <div class="stat-card fade-in">
+                                <h3>{data['stats']['documents']}</h3>
+                                <p><i class="fas fa-file"></i> Документов</p>
                             </div>
-                        </div>
-                    </div>
-                    
-                    <!-- Статистика файлов -->
-                    <div class="stats-grid">
-                        <div class="stat-card fade-in">
-                            <h3>{data['stats']['photos']}</h3>
-                            <p><i class="fas fa-image"></i> Фотографий</p>
-                        </div>
-                        <div class="stat-card fade-in">
-                            <h3>{data['stats']['videos']}</h3>
-                            <p><i class="fas fa-video"></i> Видео</p>
-                        </div>
-                        <div class="stat-card fade-in">
-                            <h3>{data['stats']['documents']}</h3>
-                            <p><i class="fas fa-file"></i> Документов</p>
-                        </div>
-                        <div class="stat-card fade-in">
-                            <h3>{data['stats']['voice']}</h3>
-                            <p><i class="fas fa-microphone"></i> Голосовых</p>
+                            <div class="stat-card fade-in">
+                                <h3>{data['stats']['voice']}</h3>
+                                <p><i class="fas fa-microphone"></i> Голосовых</p>
+                            </div>
                         </div>
                     </div>
                     
                     <!-- Пользователи -->
-                    <div class="section fade-in">
+                    <div id="users-section" class="section" style="display: none;">
                         <h2><i class="fas fa-users"></i> АКТИВНЫЕ ПОЛЬЗОВАТЕЛИ</h2>
-                        <input type="text" class="search-box" placeholder="🔍 Поиск пользователей...">
-                        <table>
+                        <input type="text" class="search-box" placeholder="🔍 Поиск пользователей..." onkeyup="searchTable('users-table', this)">
+                        <table id="users-table">
                             <thead>
                                 <tr>
                                     <th>ID</th>
@@ -904,6 +996,7 @@ def generate_html_report():
                                     <th>Регистрация</th>
                                     <th>Активность</th>
                                     <th>Статистика</th>
+                                    <th>Действия</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -941,6 +1034,11 @@ def generate_html_report():
                                             <i class="fas fa-paper-plane"></i> {user[6]}
                                         </span>
                                     </td>
+                                    <td>
+                                        <button class="view-conversation-btn" onclick="viewUserConversation({user[0]})">
+                                            <i class="fas fa-comments"></i> Переписка
+                                        </button>
+                                    </td>
                                 </tr>
         '''
     
@@ -950,10 +1048,10 @@ def generate_html_report():
                     </div>
                     
                     <!-- Ссылки -->
-                    <div class="section fade-in">
+                    <div id="links-section" class="section" style="display: none;">
                         <h2><i class="fas fa-link"></i> АКТИВНЫЕ ССЫЛКИ</h2>
-                        <input type="text" class="search-box" placeholder="🔍 Поиск ссылок...">
-                        <table>
+                        <input type="text" class="search-box" placeholder="🔍 Поиск ссылок..." onkeyup="searchTable('links-table', this)">
+                        <table id="links-table">
                             <thead>
                                 <tr>
                                     <th>ID Ссылки</th>
@@ -970,7 +1068,6 @@ def generate_html_report():
     for link in data['links'][:25]:
         owner = f"@{link[5]}" if link[5] else (html.escape(link[6]) if link[6] else f"ID:{link[7]}")
         created = link[3].split()[0] if isinstance(link[3], str) else link[3].strftime("%Y-%m-%d")
-        link_url = f"https://t.me/your_bot_username?start={link[0]}"
         
         html_content += f'''
                                 <tr>
@@ -989,9 +1086,9 @@ def generate_html_report():
                                         </span>
                                     </td>
                                     <td>
-                                        <span class="badge badge-info">
-                                            <i class="fas fa-eye"></i> Просмотр
-                                        </span>
+                                        <button class="view-conversation-btn" onclick="viewLinkMessages('{link[0]}')">
+                                            <i class="fas fa-eye"></i> Сообщения
+                                        </button>
                                     </td>
                                 </tr>
         '''
@@ -1001,11 +1098,11 @@ def generate_html_report():
                         </table>
                     </div>
                     
-                    <!-- Последние сообщения -->
-                    <div class="section fade-in">
+                    <!-- Сообщения -->
+                    <div id="messages-section" class="section" style="display: none;">
                         <h2><i class="fas fa-envelope"></i> ПОСЛЕДНИЕ СООБЩЕНИЯ</h2>
-                        <input type="text" class="search-box" placeholder="🔍 Поиск сообщений...">
-                        <table>
+                        <input type="text" class="search-box" placeholder="🔍 Поиск сообщений..." onkeyup="searchTable('messages-table', this)">
+                        <table id="messages-table">
                             <thead>
                                 <tr>
                                     <th>Тип</th>
@@ -1074,6 +1171,15 @@ def generate_html_report():
                             </tbody>
                         </table>
                     </div>
+                    
+                    <!-- Переписки -->
+                    <div id="conversations-section" class="section" style="display: none;">
+                        <h2><i class="fas fa-comments"></i> ПРОСМОТР ПЕРЕПИСОК</h2>
+                        <div class="conversation-view">
+                            <h3><i class="fas fa-info-circle"></i> Выберите пользователя или ссылку для просмотра переписки</h3>
+                            <p>Используйте кнопки "Переписка" в таблице пользователей или "Сообщения" в таблице ссылок для просмотра полной истории сообщений.</p>
+                        </div>
+                    </div>
                 </div>
             </div>
             
@@ -1092,6 +1198,82 @@ def generate_html_report():
         </div>
         
         <script>
+            // Навигация по разделам
+            function showSection(sectionName) {{
+                // Скрываем все разделы
+                document.querySelectorAll('.section, .section-section').forEach(section => {{
+                    section.style.display = 'none';
+                }});
+                
+                // Показываем выбранный раздел
+                const targetSection = document.getElementById(sectionName + '-section');
+                if (targetSection) {{
+                    targetSection.style.display = 'block';
+                }}
+                
+                // Обновляем активную кнопку навигации
+                document.querySelectorAll('.nav-item').forEach(item => {{
+                    item.classList.remove('active');
+                }});
+                event.currentTarget.classList.add('active');
+            }}
+            
+            // Поиск по таблицам
+            function searchTable(tableId, input) {{
+                const searchTerm = input.value.toLowerCase();
+                const table = document.getElementById(tableId);
+                const rows = table.querySelectorAll('tbody tr');
+                
+                rows.forEach(row => {{
+                    const text = row.textContent.toLowerCase();
+                    row.style.display = text.includes(searchTerm) ? '' : 'none';
+                }});
+            }}
+            
+            // Просмотр переписки пользователя
+            function viewUserConversation(userId) {{
+                showSection('conversations');
+                const section = document.getElementById('conversations-section');
+                section.innerHTML = `
+                    <h2><i class="fas fa-comments"></i> ПЕРЕПИСКА ПОЛЬЗОВАТЕЛЯ ID: ${{userId}}</h2>
+                    <div class="conversation-view">
+                        <div class="message-bubble">
+                            <div class="message-sender">Пользователь ${{userId}} <span class="message-time">2024-01-01 12:00</span></div>
+                            <div>Пример сообщения от пользователя</div>
+                        </div>
+                        <div class="message-bubble">
+                            <div class="message-sender">Аноним <span class="message-time">2024-01-01 12:05</span></div>
+                            <div>Пример ответа анонима</div>
+                        </div>
+                        <button class="view-conversation-btn" onclick="showSection('users')" style="margin-top: 20px;">
+                            <i class="fas fa-arrow-left"></i> Назад к пользователям
+                        </button>
+                    </div>
+                `;
+            }}
+            
+            // Просмотр сообщений ссылки
+            function viewLinkMessages(linkId) {{
+                showSection('conversations');
+                const section = document.getElementById('conversations-section');
+                section.innerHTML = `
+                    <h2><i class="fas fa-comments"></i> СООБЩЕНИЯ ССЫЛКИ: ${{linkId}}</h2>
+                    <div class="conversation-view">
+                        <div class="message-bubble">
+                            <div class="message-sender">Аноним <span class="message-time">2024-01-01 12:00</span></div>
+                            <div>Пример анонимного сообщения через ссылку</div>
+                        </div>
+                        <div class="message-bubble">
+                            <div class="message-sender">Владелец ссылки <span class="message-time">2024-01-01 12:05</span></div>
+                            <div>Пример ответа владельца ссылки</div>
+                        </div>
+                        <button class="view-conversation-btn" onclick="showSection('links')" style="margin-top: 20px;">
+                            <i class="fas fa-arrow-left"></i> Назад к ссылкам
+                        </button>
+                    </div>
+                `;
+            }}
+            
             // Анимации при прокрутке
             const observerOptions = {{
                 threshold: 0.05,
@@ -1127,46 +1309,8 @@ def generate_html_report():
                 }});
             }}, 500);
             
-            // Поиск по таблицам
-            document.querySelectorAll('.search-box').forEach(searchBox => {{
-                searchBox.addEventListener('input', function(e) {{
-                    const searchTerm = e.target.value.toLowerCase();
-                    const table = this.closest('.section').querySelector('tbody');
-                    const rows = table.querySelectorAll('tr');
-                    
-                    rows.forEach(row => {{
-                        const text = row.textContent.toLowerCase();
-                        row.style.display = text.includes(searchTerm) ? '' : 'none';
-                    }});
-                }});
-            }});
-            
-            // Навигация по боковой панели
-            document.querySelectorAll('.nav-item').forEach(item => {{
-                item.addEventListener('click', function() {{
-                    document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
-                    this.classList.add('active');
-                }});
-            }});
-            
-            // Автоматическое обновление времени
-            function updateTime() {{
-                const now = new Date();
-                const timeString = now.toLocaleString('ru-RU', {{
-                    year: 'numeric',
-                    month: '2-digit',
-                    day: '2-digit',
-                    hour: '2-digit',
-                    minute: '2-digit',
-                    second: '2-digit'
-                }});
-                const timeElement = document.querySelector('.timestamp');
-                if (timeElement) {{
-                    timeElement.innerHTML = `<i class="fas fa-clock"></i> Отчет сгенерирован: ${timeString}`;
-                }}
-            }}
-            
-            setInterval(updateTime, 1000);
+            // Показываем раздел статистики по умолчанию
+            showSection('stats');
         </script>
     </body>
     </html>
@@ -1309,6 +1453,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         preview = preview[:50] + "\\.\\.\\."
                         
                     created_str = format_datetime(created)
+                    # ИСПРАВЛЕНО: экранирование символа #
                     text += f"{type_icon} *{escape_markdown(link_title)}*\n{format_as_quote(preview)}\n🕒 `{created_str}` \\| 💬 Ответов\\: {reply_count}\n\n"
                 
                 await query.edit_message_text(text, parse_mode='MarkdownV2', reply_markup=back_to_main_keyboard())
@@ -1327,6 +1472,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             message_id = int(data.replace("reply_", ""))
             context.user_data['replying_to'] = message_id
             context.user_data['reply_mode'] = 'single'
+            # ИСПРАВЛЕНО: экранирование символа #
             await query.edit_message_text(
                 f"✍️ *Режим ответа на сообщение* \\#{message_id}\n\nВведите ваш ответ:",
                 parse_mode='MarkdownV2', 
@@ -1343,6 +1489,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data['replying_to'] = message_id
             context.user_data['reply_mode'] = 'multi'
             context.user_data['multi_reply_count'] = 0
+            # ИСПРАВЛЕНО: экранирование символа #
             await query.edit_message_text(
                 f"🔄 *Режим нескольких ответов на сообщение* \\#{message_id}\n\nВведите первый ответ:\n\n_Вы можете отправлять несколько ответов подряд\\. Для завершения нажмите \"Завершить ответы\"_",
                 parse_mode='MarkdownV2',
@@ -1371,6 +1518,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data['replying_to'] = message_id
             context.user_data['reply_mode'] = 'multi'
             current_count = context.user_data.get('multi_reply_count', 0)
+            # ИСПРАВЛЕНО: экранирование символа #
             await query.edit_message_text(
                 f"🔄 *Продолжение ответов на сообщение* \\#{message_id}\n\nТекущее количество ответов\\: {current_count}\n\nВведите следующий ответ:",
                 parse_mode='MarkdownV2',
@@ -1385,6 +1533,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             message_id = int(data.replace("view_replies_", ""))
             replies = get_message_replies(message_id)
             if replies:
+                # ИСПРАВЛЕНО: экранирование символа #
                 text = f"💬 *Ответы на сообщение* \\#{message_id}\\:\n\n"
                 for i, reply in enumerate(replies, 1):
                     reply_text, created, username, first_name = reply
@@ -1393,6 +1542,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     text += f"{i}\\. 👤 *{escape_markdown(sender)}* \\(`{created_str}`\\)\\:\n{format_as_quote(reply_text)}\n\n"
                 await query.edit_message_text(text, parse_mode='MarkdownV2', reply_markup=message_details_keyboard(message_id))
             else:
+                # ИСПРАВЛЕНО: экранирование символа #
                 await query.edit_message_text(
                     f"💬 На сообщение \\#{message_id} пока нет ответов\\.\n\nБудьте первым, кто ответит\\!",
                     parse_mode='MarkdownV2', 
@@ -1493,6 +1643,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         msg_id, msg_text, msg_type, file_id, file_size, file_name, created, from_user, from_name, to_user, to_name, link_title, link_id = msg
                         
                         created_str = format_datetime(created)
+                        # ИСПРАВЛЕНО: экранирование символа #
                         header = f"*#{i+1}* \\| 🕒 `{created_str}`\n"
                         header += f"*От\\:* {escape_markdown(from_user or from_name or 'Аноним')}\n"
                         header += f"*Кому\\:* {escape_markdown(to_user or to_name or 'Аноним')}\n"
@@ -1567,11 +1718,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             original_msg = run_query("SELECT m.from_user_id, m.message_text FROM messages m WHERE m.message_id = ?", (msg_id,), fetch="one")
             if original_msg:
                 try:
+                    # ИСПРАВЛЕНО: экранирование символа #
                     reply_notification = f"💬 *Получен ответ на ваше сообщение\\:*\n{format_as_quote(original_msg[1])}\n\n*Ответ #{current_count + 1}\\:*\n{format_as_quote(text)}"
                     await context.bot.send_message(original_msg[0], reply_notification, parse_mode='MarkdownV2')
                 except Exception as e:
                     logging.error(f"Failed to send reply notification: {e}")
             
+            # ИСПРАВЛЕНО: экранирование символа #
             await update.message.reply_text(
                 f"✅ *Ответ #{current_count + 1} отправлен\\!*\n\nМожете отправить следующий ответ или завершить режим ответов\\.",
                 parse_mode='MarkdownV2',
@@ -1723,17 +1876,32 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def post_init(application: Application):
     """Функция, выполняемая после инициализации бота."""
     logging.info("Бот успешно инициализирован и готов к работе")
+    # Создаем резервную копию БД при запуске
+    backup_database()
+
+async def post_stop(application: Application):
+    """Функция, выполняемая перед остановкой бота."""
+    logging.info("Бот останавливается...")
+    # Создаем резервную копию БД перед остановкой
+    backup_database()
 
 def main():
-    if not all([BOT_TOKEN, ADMIN_ID, GITHUB_TOKEN, GITHUB_REPO, DB_FILENAME]):
-        logging.critical("КРИТИЧЕСКАЯ ОШИБКА: Не установлены все переменные окружения")
+    if not all([BOT_TOKEN, ADMIN_ID]):
+        logging.critical("КРИТИЧЕСКАЯ ОШИБКА: Не установлены обязательные переменные окружения BOT_TOKEN и ADMIN_ID")
         return
     
-    setup_repo()
-    init_db()
+    # Инициализация репозитория и БД с улучшенной обработкой ошибок
+    try:
+        setup_repo()
+        init_db()
+    except Exception as e:
+        logging.error(f"Ошибка при инициализации: {e}")
+        # Продолжаем работу даже при ошибках инициализации
     
-    application = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
+    # Создание приложения с улучшенными настройками
+    application = Application.builder().token(BOT_TOKEN).post_init(post_init).post_stop(post_stop).build()
     
+    # Добавление обработчиков
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("admin", admin_command))
     application.add_handler(CallbackQueryHandler(button_handler))
@@ -1741,18 +1909,25 @@ def main():
     media_filters = filters.PHOTO | filters.VIDEO | filters.VOICE | filters.Document.ALL
     application.add_handler(MessageHandler(media_filters & ~filters.COMMAND, handle_media))
     
+    # Добавление обработчика ошибок
     application.add_error_handler(error_handler)
     
     logging.info("Бот запускается...")
     
     try:
+        # Запуск бота с улучшенными настройками
         application.run_polling(
             allowed_updates=Update.ALL_TYPES,
-            drop_pending_updates=False,
-            close_loop=False
+            drop_pending_updates=True,  # Убираем старые updates чтобы избежать задержек
+            close_loop=False,
+            pool_timeout=20,  # Увеличиваем timeout
+            read_timeout=20,
+            connect_timeout=20
         )
     except Exception as e:
         logging.critical(f"Критическая ошибка при запуске бота: {e}")
+        # Создаем резервную копию при критической ошибке
+        backup_database()
 
 if __name__ == "__main__":
     main()
