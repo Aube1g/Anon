@@ -257,7 +257,7 @@ def get_user_messages_with_replies(user_id, limit=50):
 
 def get_message_replies(message_id):
     return run_query('''
-        SELECT r.reply_text, r.created_at, u.username, u.first_name
+        SELECT r.reply_id, r.reply_text, r.created_at, u.username, u.first_name
         FROM replies r
         LEFT JOIN users u ON r.from_user_id = u.user_id
         WHERE r.message_id = ?
@@ -295,7 +295,8 @@ def get_conversation_for_link(link_id):
             m.from_user_id,
             NULL as reply_text,
             NULL as reply_username,
-            NULL as reply_first_name
+            NULL as reply_first_name,
+            NULL as reply_id
         FROM messages m
         LEFT JOIN users u ON m.from_user_id = u.user_id
         WHERE m.link_id = ?
@@ -316,7 +317,8 @@ def get_conversation_for_link(link_id):
             r.from_user_id,
             r.reply_text,
             u.username as reply_username,
-            u.first_name as reply_first_name
+            u.first_name as reply_first_name,
+            r.reply_id
         FROM replies r
         LEFT JOIN users u ON r.from_user_id = u.user_id
         LEFT JOIN messages m ON r.message_id = m.message_id
@@ -345,7 +347,8 @@ def get_conversation_for_user(user_id):
             m.to_user_id,
             l.title as link_title,
             l.link_id,
-            NULL as reply_text
+            NULL as reply_text,
+            NULL as reply_id
         FROM messages m
         LEFT JOIN users u_from ON m.from_user_id = u_from.user_id
         LEFT JOIN users u_to ON m.to_user_id = u_to.user_id
@@ -371,7 +374,8 @@ def get_conversation_for_user(user_id):
             NULL as to_user_id,
             NULL as link_title,
             NULL as link_id,
-            r.reply_text
+            r.reply_text,
+            r.reply_id
         FROM replies r
         WHERE r.from_user_id = ?
         
@@ -435,9 +439,22 @@ def get_all_data_for_html():
             ORDER BY m.created_at DESC
             LIMIT 200
         ''', fetch="all") or []
+        
+        # Получаем все медиафайлы
+        data['media_files'] = run_query('''
+            SELECT m.message_id, m.message_type, m.file_id, m.file_size, m.file_name, m.created_at,
+                   u.username, u.first_name, l.title as link_title
+            FROM messages m
+            LEFT JOIN users u ON m.from_user_id = u.user_id
+            LEFT JOIN links l ON m.link_id = l.link_id
+            WHERE m.message_type != 'text'
+            ORDER BY m.created_at DESC
+            LIMIT 100
+        ''', fetch="all") or []
+        
     except Exception as e:
         logging.error(f"Ошибка при получении данных для HTML: {e}")
-        data = {'stats': get_admin_stats(), 'users': [], 'links': [], 'recent_messages': []}
+        data = {'stats': get_admin_stats(), 'users': [], 'links': [], 'recent_messages': [], 'media_files': []}
     
     return data
 
@@ -461,12 +478,28 @@ def generate_html_report():
                 box-sizing: border-box;
             }}
             
+            :root {{
+                --primary: #8B5CF6;
+                --primary-dark: #7C3AED;
+                --primary-light: #A78BFA;
+                --secondary: #EC4899;
+                --accent: #06B6D4;
+                --background: #0F0F23;
+                --surface: #1A1A2E;
+                --surface-light: #252547;
+                --text: #FFFFFF;
+                --text-secondary: #A5B4FC;
+                --success: #10B981;
+                --warning: #F59E0B;
+                --danger: #EF4444;
+            }}
+            
             body {{
                 font-family: 'Exo 2', sans-serif;
-                background: linear-gradient(135deg, #0a0a0a 0%, #1e1e2e 50%, #2d1b69 100%);
+                background: linear-gradient(135deg, var(--background) 0%, #1E1B4B 50%, var(--surface) 100%);
                 min-height: 100vh;
                 padding: 20px;
-                color: #ffffff;
+                color: var(--text);
                 overflow-x: hidden;
             }}
             
@@ -475,17 +508,55 @@ def generate_html_report():
                 margin: 0 auto;
             }}
             
+            /* Preloader */
+            .preloader {{
+                position: fixed;
+                top: 0;
+                left: 0;
+                width: 100%;
+                height: 100%;
+                background: var(--background);
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                z-index: 9999;
+                transition: opacity 0.5s ease;
+            }}
+            
+            .preloader-content {{
+                text-align: center;
+            }}
+            
+            .loader {{
+                width: 80px;
+                height: 80px;
+                border: 4px solid var(--surface-light);
+                border-top: 4px solid var(--primary);
+                border-radius: 50%;
+                animation: spin 1s linear infinite;
+                margin: 0 auto 20px;
+            }}
+            
+            @keyframes spin {{
+                0% {{ transform: rotate(0deg); }}
+                100% {{ transform: rotate(360deg); }}
+            }}
+            
             .header {{
-                background: linear-gradient(135deg, rgba(106, 17, 203, 0.8) 0%, rgba(37, 117, 252, 0.8) 100%);
-                backdrop-filter: blur(20px);
+                background: linear-gradient(135deg, var(--primary) 0%, var(--secondary) 100%);
                 padding: 60px 40px;
                 border-radius: 30px;
                 margin-bottom: 40px;
                 text-align: center;
-                border: 2px solid rgba(255, 255, 255, 0.2);
                 position: relative;
                 overflow: hidden;
-                box-shadow: 0 25px 50px rgba(106, 17, 203, 0.4);
+                box-shadow: 0 25px 50px rgba(139, 92, 246, 0.3);
+                animation: headerSlide 1s ease-out;
+            }}
+            
+            @keyframes headerSlide {{
+                from {{ transform: translateY(-50px); opacity: 0; }}
+                to {{ transform: translateY(0); opacity: 1; }}
             }}
             
             .header::before {{
@@ -496,7 +567,7 @@ def generate_html_report():
                 width: 200%;
                 height: 200%;
                 background: linear-gradient(45deg, transparent, rgba(255, 255, 255, 0.1), transparent);
-                animation: shine 6s infinite linear;
+                animation: shine 8s infinite linear;
             }}
             
             @keyframes shine {{
@@ -513,47 +584,46 @@ def generate_html_report():
                 font-family: 'Orbitron', monospace;
                 font-size: 4.5em;
                 margin-bottom: 20px;
-                background: linear-gradient(135deg, #ff6b6b 0%, #ffd93d 25%, #6bcf7f 50%, #4d96ff 75%, #9d4dff 100%);
+                background: linear-gradient(135deg, #FFFFFF 0%, #A5B4FC 50%, #8B5CF6 100%);
                 -webkit-background-clip: text;
                 -webkit-text-fill-color: transparent;
                 background-clip: text;
-                text-shadow: 0 0 60px rgba(157, 77, 255, 0.6);
+                text-shadow: 0 0 60px rgba(139, 92, 246, 0.5);
                 font-weight: 900;
                 letter-spacing: 4px;
                 animation: textGlow 3s ease-in-out infinite alternate;
             }}
             
             @keyframes textGlow {{
-                from {{ text-shadow: 0 0 60px rgba(157, 77, 255, 0.6); }}
-                to {{ text-shadow: 0 0 80px rgba(77, 150, 255, 0.8), 0 0 100px rgba(157, 77, 255, 0.6); }}
+                from {{ text-shadow: 0 0 60px rgba(139, 92, 246, 0.5); }}
+                to {{ text-shadow: 0 0 80px rgba(236, 72, 153, 0.6), 0 0 100px rgba(139, 92, 246, 0.5); }}
             }}
             
             .header .subtitle {{
                 font-size: 1.6em;
-                color: #e6f7ff;
+                color: #E0E7FF;
                 margin-bottom: 25px;
                 font-weight: 300;
-                text-shadow: 0 2px 15px rgba(0,0,0,0.5);
                 animation: fadeIn 2s ease-in;
             }}
             
             .timestamp {{
                 font-family: 'Orbitron', monospace;
                 font-size: 1.1em;
-                color: #ffd93d;
-                background: rgba(0, 0, 0, 0.5);
+                color: var(--warning);
+                background: rgba(0, 0, 0, 0.3);
                 padding: 15px 25px;
                 border-radius: 30px;
                 display: inline-block;
-                border: 2px solid rgba(255, 217, 61, 0.4);
-                box-shadow: 0 8px 25px rgba(255,217,61,0.3);
+                border: 2px solid rgba(245, 158, 11, 0.3);
+                box-shadow: 0 8px 25px rgba(245, 158, 11, 0.2);
                 animation: pulse 2s infinite;
             }}
             
             @keyframes pulse {{
-                0% {{ transform: scale(1); box-shadow: 0 8px 25px rgba(255,217,61,0.3); }}
-                50% {{ transform: scale(1.05); box-shadow: 0 12px 35px rgba(255,217,61,0.5); }}
-                100% {{ transform: scale(1); box-shadow: 0 8px 25px rgba(255,217,61,0.3); }}
+                0% {{ transform: scale(1); box-shadow: 0 8px 25px rgba(245, 158, 11, 0.2); }}
+                50% {{ transform: scale(1.05); box-shadow: 0 12px 35px rgba(245, 158, 11, 0.4); }}
+                100% {{ transform: scale(1); box-shadow: 0 8px 25px rgba(245, 158, 11, 0.2); }}
             }}
             
             .dashboard {{
@@ -561,10 +631,16 @@ def generate_html_report():
                 grid-template-columns: 320px 1fr;
                 gap: 35px;
                 margin-bottom: 40px;
+                animation: contentSlide 0.8s ease-out 0.3s both;
+            }}
+            
+            @keyframes contentSlide {{
+                from {{ transform: translateY(30px); opacity: 0; }}
+                to {{ transform: translateY(0); opacity: 1; }}
             }}
             
             .sidebar {{
-                background: linear-gradient(135deg, rgba(255, 255, 255, 0.15) 0%, rgba(255, 255, 255, 0.08) 100%);
+                background: rgba(255, 255, 255, 0.1);
                 backdrop-filter: blur(20px);
                 padding: 35px;
                 border-radius: 25px;
@@ -582,22 +658,23 @@ def generate_html_report():
                 border-radius: 18px;
                 cursor: pointer;
                 transition: all 0.4s ease;
-                color: #e6f7ff;
+                color: var(--text-secondary);
                 text-decoration: none;
                 background: rgba(255, 255, 255, 0.05);
                 border: 1px solid rgba(255, 255, 255, 0.1);
             }}
             
             .nav-item:hover {{
-                background: linear-gradient(135deg, rgba(106, 17, 203, 0.3), rgba(37, 117, 252, 0.3));
+                background: linear-gradient(135deg, var(--primary), var(--secondary));
                 transform: translateX(12px) scale(1.02);
-                box-shadow: 0 8px 25px rgba(106, 17, 203, 0.3);
+                box-shadow: 0 8px 25px rgba(139, 92, 246, 0.3);
+                color: white;
             }}
             
             .nav-item.active {{
-                background: linear-gradient(135deg, #6a11cb, #2575fc);
+                background: linear-gradient(135deg, var(--primary), var(--secondary));
                 color: white;
-                box-shadow: 0 10px 30px rgba(106, 17, 203, 0.5);
+                box-shadow: 0 10px 30px rgba(139, 92, 246, 0.5);
                 transform: translateX(8px);
             }}
             
@@ -620,16 +697,22 @@ def generate_html_report():
             }}
             
             .stat-card {{
-                background: linear-gradient(135deg, rgba(255, 255, 255, 0.18) 0%, rgba(255, 255, 255, 0.09) 100%);
+                background: linear-gradient(135deg, rgba(255, 255, 255, 0.15) 0%, rgba(255, 255, 255, 0.08) 100%);
                 backdrop-filter: blur(20px);
                 padding: 40px 35px;
                 border-radius: 25px;
                 text-align: center;
-                border: 1px solid rgba(255, 255, 255, 0.18);
+                border: 1px solid rgba(255, 255, 255, 0.15);
                 transition: all 0.5s ease;
                 position: relative;
                 overflow: hidden;
                 box-shadow: 0 15px 35px rgba(0, 0, 0, 0.25);
+                animation: cardAppear 0.6s ease-out;
+            }}
+            
+            @keyframes cardAppear {{
+                from {{ transform: scale(0.8); opacity: 0; }}
+                to {{ transform: scale(1); opacity: 1; }}
             }}
             
             .stat-card::before {{
@@ -639,7 +722,7 @@ def generate_html_report():
                 left: -100%;
                 width: 100%;
                 height: 100%;
-                background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.15), transparent);
+                background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.1), transparent);
                 transition: left 0.8s ease;
             }}
             
@@ -650,14 +733,14 @@ def generate_html_report():
             .stat-card:hover {{
                 transform: translateY(-15px) scale(1.05);
                 box-shadow: 0 25px 50px rgba(0, 0, 0, 0.4);
-                border-color: rgba(106, 17, 203, 0.5);
+                border-color: var(--primary-light);
             }}
             
             .stat-card h3 {{
                 font-family: 'Orbitron', monospace;
                 font-size: 4em;
                 margin-bottom: 25px;
-                background: linear-gradient(135deg, #ff6b6b 0%, #ffd93d 25%, #6bcf7f 50%, #4d96ff 75%, #9d4dff 100%);
+                background: linear-gradient(135deg, var(--primary) 0%, var(--secondary) 50%, var(--accent) 100%);
                 -webkit-background-clip: text;
                 -webkit-text-fill-color: transparent;
                 background-clip: text;
@@ -665,7 +748,7 @@ def generate_html_report():
             }}
             
             .stat-card p {{
-                color: #e6f7ff;
+                color: var(--text-secondary);
                 font-size: 1.2em;
                 font-weight: 600;
                 text-transform: uppercase;
@@ -673,15 +756,21 @@ def generate_html_report():
             }}
             
             .section {{
-                background: linear-gradient(135deg, rgba(255, 255, 255, 0.15) 0%, rgba(255, 255, 255, 0.07) 100%);
+                background: linear-gradient(135deg, rgba(255, 255, 255, 0.12) 0%, rgba(255, 255, 255, 0.06) 100%);
                 backdrop-filter: blur(25px);
                 padding: 40px;
                 border-radius: 25px;
                 margin-bottom: 40px;
-                border: 1px solid rgba(255, 255, 255, 0.15);
+                border: 1px solid rgba(255, 255, 255, 0.12);
                 position: relative;
                 overflow: hidden;
                 box-shadow: 0 20px 40px rgba(0, 0, 0, 0.25);
+                animation: sectionSlide 0.8s ease-out;
+            }}
+            
+            @keyframes sectionSlide {{
+                from {{ transform: translateX(-30px); opacity: 0; }}
+                to {{ transform: translateX(0); opacity: 1; }}
             }}
             
             .section::before {{
@@ -690,15 +779,15 @@ def generate_html_report():
                 top: 0;
                 left: 0;
                 right: 0;
-                height: 5px;
-                background: linear-gradient(90deg, #ff6b6b, #ffd93d, #6bcf7f, #4d96ff, #9d4dff);
+                height: 4px;
+                background: linear-gradient(90deg, var(--primary), var(--secondary), var(--accent));
             }}
             
             .section h2 {{
                 font-family: 'Orbitron', monospace;
                 font-size: 2.2em;
                 margin-bottom: 35px;
-                color: #ffffff;
+                color: var(--text);
                 display: flex;
                 align-items: center;
                 gap: 20px;
@@ -706,7 +795,7 @@ def generate_html_report():
             }}
             
             .section h2 i {{
-                background: linear-gradient(135deg, #6a11cb, #2575fc);
+                background: linear-gradient(135deg, var(--primary), var(--secondary));
                 -webkit-background-clip: text;
                 -webkit-text-fill-color: transparent;
                 font-size: 1.4em;
@@ -729,8 +818,8 @@ def generate_html_report():
             }}
             
             th {{
-                background: linear-gradient(135deg, rgba(106, 17, 203, 0.3) 0%, rgba(37, 117, 252, 0.3) 100%);
-                color: #ffd93d;
+                background: linear-gradient(135deg, var(--primary-dark), var(--primary));
+                color: white;
                 font-weight: 700;
                 font-family: 'Orbitron', monospace;
                 text-transform: uppercase;
@@ -741,13 +830,13 @@ def generate_html_report():
             }}
             
             td {{
-                color: #e6f7ff;
+                color: var(--text-secondary);
                 font-weight: 400;
                 transition: all 0.3s ease;
             }}
             
             tr:hover {{
-                background: rgba(255, 255, 255, 0.1);
+                background: rgba(255, 255, 255, 0.08);
                 transform: scale(1.01);
             }}
             
@@ -765,27 +854,27 @@ def generate_html_report():
             }}
             
             .badge-success {{
-                background: linear-gradient(135deg, #00b894, #00a085);
+                background: linear-gradient(135deg, var(--success), #059669);
                 color: white;
             }}
             
             .badge-info {{
-                background: linear-gradient(135deg, #0984e3, #0770c4);
+                background: linear-gradient(135deg, var(--accent), #0891B2);
                 color: white;
             }}
             
             .badge-warning {{
-                background: linear-gradient(135deg, #fdcb6e, #f9b745);
+                background: linear-gradient(135deg, var(--warning), #D97706);
                 color: white;
             }}
             
             .badge-purple {{
-                background: linear-gradient(135deg, #6c5ce7, #5649c8);
+                background: linear-gradient(135deg, var(--primary), var(--primary-dark));
                 color: white;
             }}
             
             .badge-danger {{
-                background: linear-gradient(135deg, #e84393, #d63079);
+                background: linear-gradient(135deg, var(--danger), #DC2626);
                 color: white;
             }}
             
@@ -799,33 +888,34 @@ def generate_html_report():
                 margin-right: 15px;
                 font-weight: bold;
                 font-size: 1.2em;
+                color: white;
             }}
             
-            .type-text {{ background: linear-gradient(135deg, #00b894, #00a085); }}
-            .type-photo {{ background: linear-gradient(135deg, #0984e3, #0770c4); }}
-            .type-video {{ background: linear-gradient(135deg, #fdcb6e, #f9b745); }}
-            .type-document {{ background: linear-gradient(135deg, #6c5ce7, #5649c8); }}
-            .type-voice {{ background: linear-gradient(135deg, #e84393, #d63079); }}
+            .type-text {{ background: linear-gradient(135deg, var(--success), #059669); }}
+            .type-photo {{ background: linear-gradient(135deg, var(--accent), #0891B2); }}
+            .type-video {{ background: linear-gradient(135deg, var(--warning), #D97706); }}
+            .type-document {{ background: linear-gradient(135deg, var(--primary), var(--primary-dark)); }}
+            .type-voice {{ background: linear-gradient(135deg, var(--danger), #DC2626); }}
             
             .user-link {{
-                color: #ffd93d;
+                color: var(--primary-light);
                 text-decoration: none;
                 font-weight: 600;
                 transition: all 0.3s ease;
             }}
             
             .user-link:hover {{
-                color: #ff6b6b;
+                color: var(--secondary);
                 text-decoration: underline;
             }}
             
             .link-url {{
-                background: rgba(255,255,255,0.12);
+                background: rgba(255,255,255,0.1);
                 padding: 10px 15px;
                 border-radius: 10px;
                 font-family: monospace;
                 font-size: 0.95em;
-                color: #b3e0ff;
+                color: var(--text-secondary);
                 border: 1px solid rgba(255,255,255,0.2);
             }}
             
@@ -834,7 +924,7 @@ def generate_html_report():
                 overflow: hidden;
                 text-overflow: ellipsis;
                 white-space: nowrap;
-                color: #cce7ff;
+                color: var(--text-secondary);
             }}
             
             .conversation-view {{
@@ -842,7 +932,7 @@ def generate_html_report():
                 border-radius: 20px;
                 padding: 25px;
                 margin: 15px 0;
-                border-left: 5px solid #6a11cb;
+                border-left: 5px solid var(--primary);
                 animation: slideIn 0.5s ease-out;
             }}
             
@@ -852,11 +942,11 @@ def generate_html_report():
             }}
             
             .message-bubble {{
-                background: rgba(106, 17, 203, 0.25);
+                background: rgba(139, 92, 246, 0.2);
                 border-radius: 18px;
                 padding: 18px;
                 margin: 15px 0;
-                border: 1px solid rgba(106, 17, 203, 0.4);
+                border: 1px solid rgba(139, 92, 246, 0.3);
                 animation: messageAppear 0.6s ease-out;
             }}
             
@@ -867,47 +957,22 @@ def generate_html_report():
             
             .message-sender {{
                 font-weight: bold;
-                color: #ffd93d;
+                color: var(--primary-light);
                 margin-bottom: 8px;
                 font-size: 1.1em;
             }}
             
             .message-time {{
                 font-size: 0.85em;
-                color: #b3e0ff;
+                color: var(--text-secondary);
                 float: right;
-            }}
-            
-            @keyframes fadeInUp {{
-                from {{ 
-                    opacity: 0; 
-                    transform: translateY(40px); 
-                }}
-                to {{ 
-                    opacity: 1; 
-                    transform: translateY(0); 
-                }}
-            }}
-            
-            .fade-in {{
-                animation: fadeInUp 0.8s ease-out forwards;
-            }}
-            
-            .floating {{
-                animation: floating 4s ease-in-out infinite;
-            }}
-            
-            @keyframes floating {{
-                0% {{ transform: translateY(0px); }}
-                50% {{ transform: translateY(-20px); }}
-                100% {{ transform: translateY(0px); }}
             }}
             
             .footer {{
                 text-align: center;
                 margin-top: 70px;
                 padding: 50px;
-                background: linear-gradient(135deg, rgba(106, 17, 203, 0.2) 0%, rgba(37, 117, 252, 0.2) 100%);
+                background: linear-gradient(135deg, rgba(139, 92, 246, 0.15) 0%, rgba(236, 72, 153, 0.15) 100%);
                 border-radius: 30px;
                 border: 1px solid rgba(255, 255, 255, 0.15);
                 animation: fadeIn 2s ease-in;
@@ -921,17 +986,17 @@ def generate_html_report():
             .footer-text {{
                 font-family: 'Orbitron', monospace;
                 font-size: 1.5em;
-                color: #ffd93d;
+                color: var(--primary-light);
                 letter-spacing: 4px;
                 margin-bottom: 20px;
-                text-shadow: 0 0 20px rgba(255, 217, 61, 0.5);
+                text-shadow: 0 0 20px rgba(139, 92, 246, 0.5);
             }}
             
             .user-avatar {{
                 width: 50px;
                 height: 50px;
                 border-radius: 50%;
-                background: linear-gradient(135deg, #6a11cb, #2575fc);
+                background: linear-gradient(135deg, var(--primary), var(--secondary));
                 display: flex;
                 align-items: center;
                 justify-content: center;
@@ -939,7 +1004,7 @@ def generate_html_report():
                 color: white;
                 margin-right: 15px;
                 font-size: 1.3em;
-                box-shadow: 0 5px 15px rgba(106, 17, 203, 0.4);
+                box-shadow: 0 5px 15px rgba(139, 92, 246, 0.4);
             }}
             
             .progress-bar {{
@@ -953,7 +1018,7 @@ def generate_html_report():
             
             .progress-fill {{
                 height: 100%;
-                background: linear-gradient(90deg, #ff6b6b, #ffd93d, #6bcf7f, #4d96ff, #9d4dff);
+                background: linear-gradient(90deg, var(--primary), var(--secondary), var(--accent));
                 border-radius: 5px;
                 transition: width 1.5s ease-in-out;
                 animation: progressAnimation 2s ease-in-out infinite alternate;
@@ -965,8 +1030,8 @@ def generate_html_report():
             }}
             
             .search-box {{
-                background: rgba(255, 255, 255, 0.12);
-                border: 1px solid rgba(255, 255, 255, 0.25);
+                background: rgba(255, 255, 255, 0.1);
+                border: 1px solid rgba(255, 255, 255, 0.2);
                 border-radius: 18px;
                 padding: 18px 25px;
                 color: white;
@@ -979,17 +1044,17 @@ def generate_html_report():
             
             .search-box:focus {{
                 outline: none;
-                border-color: #6a11cb;
-                box-shadow: 0 0 20px rgba(106, 17, 203, 0.4);
+                border-color: var(--primary);
+                box-shadow: 0 0 20px rgba(139, 92, 246, 0.4);
                 transform: scale(1.02);
             }}
             
             .search-box::placeholder {{
-                color: #b3e0ff;
+                color: var(--text-secondary);
             }}
             
             .view-conversation-btn {{
-                background: linear-gradient(135deg, #6a11cb, #2575fc);
+                background: linear-gradient(135deg, var(--primary), var(--secondary));
                 color: white;
                 border: none;
                 padding: 12px 20px;
@@ -1002,7 +1067,7 @@ def generate_html_report():
             
             .view-conversation-btn:hover {{
                 transform: translateY(-3px);
-                box-shadow: 0 10px 25px rgba(106, 17, 203, 0.5);
+                box-shadow: 0 10px 25px rgba(139, 92, 246, 0.5);
             }}
             
             .conversation-message {{
@@ -1010,16 +1075,43 @@ def generate_html_report():
                 padding: 15px;
                 border-radius: 15px;
                 background: rgba(255, 255, 255, 0.08);
-                border-left: 4px solid #2575fc;
+                border-left: 4px solid var(--accent);
             }}
             
             .conversation-reply {{
                 margin: 15px 0;
                 padding: 15px;
                 border-radius: 15px;
-                background: rgba(106, 17, 203, 0.15);
-                border-left: 4px solid #6a11cb;
+                background: rgba(139, 92, 246, 0.15);
+                border-left: 4px solid var(--primary);
                 margin-left: 30px;
+            }}
+            
+            .media-grid {{
+                display: grid;
+                grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+                gap: 20px;
+                margin-top: 20px;
+            }}
+            
+            .media-item {{
+                background: rgba(255, 255, 255, 0.08);
+                border-radius: 15px;
+                padding: 20px;
+                text-align: center;
+                transition: all 0.3s ease;
+                border: 1px solid rgba(255, 255, 255, 0.1);
+            }}
+            
+            .media-item:hover {{
+                transform: translateY(-5px);
+                box-shadow: 0 10px 25px rgba(139, 92, 246, 0.3);
+            }}
+            
+            .media-icon {{
+                font-size: 2.5em;
+                margin-bottom: 15px;
+                color: var(--primary-light);
             }}
             
             @media (max-width: 1200px) {{
@@ -1053,11 +1145,20 @@ def generate_html_report():
         </style>
     </head>
     <body>
+        <!-- Preloader -->
+        <div class="preloader" id="preloader">
+            <div class="preloader-content">
+                <div class="loader"></div>
+                <h2 style="color: var(--primary-light); margin-bottom: 10px;">Загрузка панели администратора</h2>
+                <p style="color: var(--text-secondary);">Инициализация системы мониторинга...</p>
+            </div>
+        </div>
+        
         <div class="container">
             <!-- Заголовок -->
-            <div class="header fade-in">
+            <div class="header">
                 <div class="header-content">
-                    <h1 class="floating"><i class="fas fa-robot"></i> АДМИН ПАНЕЛЬ</h1>
+                    <h1><i class="fas fa-robot"></i> АДМИН ПАНЕЛЬ</h1>
                     <div class="subtitle">Расширенная система мониторинга анонимного бота</div>
                     <div class="timestamp">
                         <i class="fas fa-clock"></i> Отчет сгенерирован: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
@@ -1067,7 +1168,7 @@ def generate_html_report():
             
             <div class="dashboard">
                 <!-- Боковая панель -->
-                <div class="sidebar fade-in">
+                <div class="sidebar">
                     <div class="nav-item active" onclick="showSection('stats')">
                         <div class="nav-icon"><i class="fas fa-tachometer-alt"></i></div>
                         <div>Общая статистика</div>
@@ -1084,6 +1185,10 @@ def generate_html_report():
                         <div class="nav-icon"><i class="fas fa-envelope"></i></div>
                         <div>Сообщения ({data['stats']['messages']})</div>
                     </div>
+                    <div class="nav-item" onclick="showSection('media')">
+                        <div class="nav-icon"><i class="fas fa-photo-video"></i></div>
+                        <div>Медиафайлы</div>
+                    </div>
                     <div class="nav-item" onclick="showSection('conversations')">
                         <div class="nav-icon"><i class="fas fa-comments"></i></div>
                         <div>Переписки</div>
@@ -1096,28 +1201,28 @@ def generate_html_report():
                     <div id="stats-section" class="section-section">
                         <!-- Основная статистика -->
                         <div class="stats-grid">
-                            <div class="stat-card fade-in">
+                            <div class="stat-card">
                                 <h3>{data['stats']['users']}</h3>
                                 <p><i class="fas fa-users"></i> Всего пользователей</p>
                                 <div class="progress-bar">
                                     <div class="progress-fill" style="width: {min(data['stats']['users'] * 2, 100)}%"></div>
                                 </div>
                             </div>
-                            <div class="stat-card fade-in">
+                            <div class="stat-card">
                                 <h3>{data['stats']['links']}</h3>
                                 <p><i class="fas fa-link"></i> Активных ссылок</p>
                                 <div class="progress-bar">
                                     <div class="progress-fill" style="width: {min(data['stats']['links'] * 5, 100)}%"></div>
                                 </div>
                             </div>
-                            <div class="stat-card fade-in">
+                            <div class="stat-card">
                                 <h3>{data['stats']['messages']}</h3>
                                 <p><i class="fas fa-envelope"></i> Всего сообщений</p>
                                 <div class="progress-bar">
                                     <div class="progress-fill" style="width: {min(data['stats']['messages'] * 0.5, 100)}%"></div>
                                 </div>
                             </div>
-                            <div class="stat-card fade-in">
+                            <div class="stat-card">
                                 <h3>{data['stats']['replies']}</h3>
                                 <p><i class="fas fa-reply"></i> Ответов</p>
                                 <div class="progress-bar">
@@ -1128,19 +1233,19 @@ def generate_html_report():
                         
                         <!-- Статистика файлов -->
                         <div class="stats-grid">
-                            <div class="stat-card fade-in">
+                            <div class="stat-card">
                                 <h3>{data['stats']['photos']}</h3>
                                 <p><i class="fas fa-image"></i> Фотографий</p>
                             </div>
-                            <div class="stat-card fade-in">
+                            <div class="stat-card">
                                 <h3>{data['stats']['videos']}</h3>
                                 <p><i class="fas fa-video"></i> Видео</p>
                             </div>
-                            <div class="stat-card fade-in">
+                            <div class="stat-card">
                                 <h3>{data['stats']['documents']}</h3>
                                 <p><i class="fas fa-file"></i> Документов</p>
                             </div>
-                            <div class="stat-card fade-in">
+                            <div class="stat-card">
                                 <h3>{data['stats']['voice']}</h3>
                                 <p><i class="fas fa-microphone"></i> Голосовых</p>
                             </div>
@@ -1179,7 +1284,7 @@ def generate_html_report():
                                             </div>
                                             <div>
                                                 <div style="font-weight: 600; font-size: 1.1em;">{username_display}</div>
-                                                <div style="font-size: 0.85em; color: #b3e0ff;">{html.escape(user[2]) if user[2] else 'No Name'}</div>
+                                                <div style="font-size: 0.85em; color: var(--text-secondary);">{html.escape(user[2]) if user[2] else 'No Name'}</div>
                                             </div>
                                         </div>
                                     </td>
@@ -1237,7 +1342,7 @@ def generate_html_report():
                                     <td><code class="link-url">{link[0]}</code></td>
                                     <td>
                                         <div style="font-weight: 600; font-size: 1.1em;">{html.escape(link[1])}</div>
-                                        <div style="font-size: 0.85em; color: #b3e0ff;">{html.escape(link[2]) if link[2] else 'Без описания'}</div>
+                                        <div style="font-size: 0.85em; color: var(--text-secondary);">{html.escape(link[2]) if link[2] else 'Без описания'}</div>
                                     </td>
                                     <td>
                                         <a href="#" class="user-link">{owner}</a>
@@ -1335,6 +1440,37 @@ def generate_html_report():
                         </table>
                     </div>
                     
+                    <!-- Медиафайлы -->
+                    <div id="media-section" class="section" style="display: none;">
+                        <h2><i class="fas fa-photo-video"></i> МЕДИАФАЙЛЫ</h2>
+                        <div class="media-grid">
+    '''
+    
+    for media in data['media_files'][:20]:
+        media_icon = {
+            'photo': '🖼️',
+            'video': '🎥',
+            'document': '📄',
+            'voice': '🎤'
+        }.get(media[1], '📁')
+        
+        file_size = f"{(media[3] // 1024):,} KB" if media[3] else 'N/A'
+        user = f"@{media[6]}" if media[6] else (html.escape(media[7]) if media[7] else 'Аноним')
+        
+        html_content += f'''
+                            <div class="media-item">
+                                <div class="media-icon">{media_icon}</div>
+                                <div style="font-weight: 600; margin-bottom: 8px;">{media[1].upper()}</div>
+                                <div style="font-size: 0.9em; color: var(--text-secondary); margin-bottom: 5px;">{user}</div>
+                                <div style="font-size: 0.8em; color: var(--text-secondary);">{file_size}</div>
+                                <div style="font-size: 0.8em; color: var(--primary-light); margin-top: 5px;">{html.escape(media[8]) if media[8] else 'Без названия'}</div>
+                            </div>
+        '''
+    
+    html_content += '''
+                        </div>
+                    </div>
+                    
                     <!-- Переписки -->
                     <div id="conversations-section" class="section" style="display: none;">
                         <h2><i class="fas fa-comments"></i> ПРОСМОТР ПЕРЕПИСОК</h2>
@@ -1347,20 +1483,30 @@ def generate_html_report():
             </div>
             
             <!-- Футер -->
-            <div class="footer fade-in">
+            <div class="footer">
                 <div class="footer-text">
                     <i class="fas fa-robot"></i> АНОНИМНЫЙ БОТ | РАСШИРЕННАЯ СИСТЕМА МОНИТОРИНГА
                 </div>
-                <div style="margin-top: 20px; color: #b3e0ff; font-size: 1.1em;">
+                <div style="margin-top: 20px; color: var(--text-secondary); font-size: 1.1em;">
                     <i class="fas fa-shield-alt"></i> Защищенная система | <i class="fas fa-bolt"></i> Реальное время | <i class="fas fa-chart-line"></i> Полная аналитика
                 </div>
-                <div style="margin-top: 15px; color: #ffd93d; font-family: 'Orbitron', monospace; font-size: 1em;">
+                <div style="margin-top: 15px; color: var(--primary-light); font-family: 'Orbitron', monospace; font-size: 1em;">
                     SIROK228 | POWERED BY ADVANCED AI TECHNOLOGY
                 </div>
             </div>
         </div>
         
         <script>
+            // Скрываем прелоадер после загрузки
+            window.addEventListener('load', function() {{
+                setTimeout(() => {{
+                    document.getElementById('preloader').style.opacity = '0';
+                    setTimeout(() => {{
+                        document.getElementById('preloader').style.display = 'none';
+                    }}, 500);
+                }}, 1000);
+            }});
+            
             // Навигация по разделам
             function showSection(sectionName) {{
                 // Скрываем все разделы
@@ -1401,7 +1547,7 @@ def generate_html_report():
                     <h2><i class="fas fa-comments"></i> ПЕРЕПИСКА ПОЛЬЗОВАТЕЛЯ: ${username}</h2>
                     <div class="conversation-view">
                         <div style="text-align: center; padding: 40px;">
-                            <i class="fas fa-spinner fa-spin fa-3x" style="color: #6a11cb; margin-bottom: 20px;"></i>
+                            <i class="fas fa-spinner fa-spin fa-3x" style="color: var(--primary); margin-bottom: 20px;"></i>
                             <h3>Загрузка переписки...</h3>
                             <p>Идет загрузка истории сообщений для пользователя ${username}</p>
                         </div>
@@ -1452,7 +1598,7 @@ def generate_html_report():
                     <h2><i class="fas fa-comments"></i> ПЕРЕПИСКА ПО ССЫЛКЕ: ${linkTitle}</h2>
                     <div class="conversation-view">
                         <div style="text-align: center; padding: 40px;">
-                            <i class="fas fa-spinner fa-spin fa-3x" style="color: #6a11cb; margin-bottom: 20px;"></i>
+                            <i class="fas fa-spinner fa-spin fa-3x" style="color: var(--primary); margin-bottom: 20px;"></i>
                             <h3>Загрузка переписки...</h3>
                             <p>Идет загрузка истории сообщений для ссылки "${linkTitle}"</p>
                         </div>
@@ -1511,7 +1657,6 @@ def generate_html_report():
                     if (entry.isIntersecting) {{
                         entry.target.style.opacity = '1';
                         entry.target.style.transform = 'translateY(0)';
-                        entry.target.style.animation = 'fadeInUp 0.8s ease-out forwards';
                     }}
                 }});
             }}, observerOptions);
@@ -1546,7 +1691,7 @@ def generate_html_report():
 
 # --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
 
-def escape_markdown(text: str) -> str:
+def escape_markdown_v2(text: str) -> str:
     """Экранирует специальные символы для MarkdownV2"""
     if not text: 
         return ""
@@ -1556,7 +1701,7 @@ def escape_markdown(text: str) -> str:
 def format_as_quote(text: str) -> str:
     if not text: 
         return ""
-    escaped_text = escape_markdown(text)
+    escaped_text = escape_markdown_v2(text)
     return '\n'.join([f"> {line}" for line in escaped_text.split('\n')])
 
 def format_datetime(dt_string):
@@ -1581,6 +1726,15 @@ def message_details_keyboard(message_id):
         [InlineKeyboardButton("📋 Просмотреть ответы", callback_data=f"view_replies_{message_id}")],
         [InlineKeyboardButton("🔄 Продолжить ответы", callback_data=f"continue_reply_{message_id}")],
         [InlineKeyboardButton("🔙 Назад к сообщениям", callback_data="my_messages")]
+    ])
+
+def reply_to_reply_keyboard(reply_id, message_id):
+    """Клавиатура для ответа на ответ"""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("💬 Ответить на этот ответ", callback_data=f"reply_to_reply_{reply_id}")],
+        [InlineKeyboardButton("🔄 Несколько ответов", callback_data=f"multi_reply_to_reply_{reply_id}")],
+        [InlineKeyboardButton("📋 Все ответы", callback_data=f"view_replies_{message_id}")],
+        [InlineKeyboardButton("🔙 Назад", callback_data=f"view_replies_{message_id}")]
     ])
 
 def admin_keyboard():
@@ -1610,7 +1764,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             link_info = get_link_info(link_id)
             if link_info:
                 context.user_data['current_link'] = link_id
-                text = f"🔗 *Анонимная ссылка*\n\n📝 *{escape_markdown(link_info[2])}*\n📋 {escape_markdown(link_info[3])}\n\n✍️ Напишите анонимное сообщение или отправьте медиафайл\\."
+                text = f"🔗 *Анонимная ссылка*\n\n📝 *{escape_markdown_v2(link_info[2])}*\n📋 {escape_markdown_v2(link_info[3])}\n\n✍️ Напишите анонимное сообщение или отправьте медиафайл\\."
                 await update.message.reply_text(text, parse_mode='MarkdownV2', reply_markup=back_to_main_keyboard())
                 return
         
@@ -1659,7 +1813,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     bot_username = context.bot.username
                     link_url = f"https://t.me/{bot_username}?start={link[0]}"
                     created = format_datetime(link[3])
-                    text += f"📝 *{escape_markdown(link[1])}*\n📋 {escape_markdown(link[2])}\n🔗 `{escape_markdown(link_url)}`\n🕒 `{created}`\n\n"
+                    text += f"📝 *{escape_markdown_v2(link[1])}*\n📋 {escape_markdown_v2(link[2])}\n🔗 `{escape_markdown_v2(link_url)}`\n🕒 `{created}`\n\n"
                 await query.edit_message_text(text, parse_mode='MarkdownV2', reply_markup=back_to_main_keyboard())
             else:
                 await query.edit_message_text("У вас пока нет созданных ссылок\\.", reply_markup=back_to_main_keyboard(), parse_mode='MarkdownV2')
@@ -1680,7 +1834,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         
                     created_str = format_datetime(created)
                     # ИСПРАВЛЕНО: экранирование символа #
-                    text += f"{type_icon} *{escape_markdown(link_title)}*\n{format_as_quote(preview)}\n🕒 `{created_str}` \\| 💬 Ответов\\: {reply_count}\n\n"
+                    text += f"{type_icon} *{escape_markdown_v2(link_title)}*\n{format_as_quote(preview)}\n🕒 `{created_str}` \\| 💬 Ответов\\: {reply_count}\n\n"
                 
                 await query.edit_message_text(text, parse_mode='MarkdownV2', reply_markup=back_to_main_keyboard())
             else:
@@ -1762,10 +1916,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 # ИСПРАВЛЕНО: экранирование символа #
                 text = f"💬 *Ответы на сообщение* \\#{message_id}\\:\n\n"
                 for i, reply in enumerate(replies, 1):
-                    reply_text, created, username, first_name = reply
+                    reply_id, reply_text, created, username, first_name = reply
                     sender = f"@{username}" if username else (first_name or "Аноним")
                     created_str = format_datetime(created)
-                    text += f"{i}\\. 👤 *{escape_markdown(sender)}* \\(`{created_str}`\\)\\:\n{format_as_quote(reply_text)}\n\n"
+                    text += f"{i}\\. 👤 *{escape_markdown_v2(sender)}* \\(`{created_str}`\\)\\:\n{format_as_quote(reply_text)}\n\n"
+                    # Добавляем кнопку для ответа на конкретный ответ
+                    text += f"   └─ 💬 *Ответить на этот ответ* \\- /reply\\_to\\_{reply_id}\n\n"
+                
                 await query.edit_message_text(text, parse_mode='MarkdownV2', reply_markup=message_details_keyboard(message_id))
             else:
                 # ИСПРАВЛЕНО: экранирование символа #
@@ -1774,6 +1931,60 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     parse_mode='MarkdownV2', 
                     reply_markup=message_details_keyboard(message_id)
                 )
+            return
+
+        # Ответ на ответ
+        elif data.startswith("reply_to_reply_"):
+            reply_id = int(data.replace("reply_to_reply_", ""))
+            context.user_data['replying_to_reply'] = reply_id
+            context.user_data['reply_mode'] = 'single_reply'
+            
+            reply_info = run_query("SELECT r.reply_text, r.message_id FROM replies r WHERE r.reply_id = ?", (reply_id,), fetch="one")
+            if reply_info:
+                reply_text, message_id = reply_info
+                # ИСПРАВЛЕНО: экранирование символа #
+                await query.edit_message_text(
+                    f"💬 *Ответ на ответ* \\#{reply_id}\n\n*Оригинальный ответ\\:*\n{format_as_quote(reply_text)}\n\nВведите ваш ответ\\:",
+                    parse_mode='MarkdownV2',
+                    reply_markup=reply_to_reply_keyboard(reply_id, message_id)
+                )
+            return
+
+        elif data.startswith("multi_reply_to_reply_"):
+            reply_id = int(data.replace("multi_reply_to_reply_", ""))
+            context.user_data['replying_to_reply'] = reply_id
+            context.user_data['reply_mode'] = 'multi_reply'
+            context.user_data['multi_reply_count'] = 0
+            
+            reply_info = run_query("SELECT r.reply_text, r.message_id FROM replies r WHERE r.reply_id = ?", (reply_id,), fetch="one")
+            if reply_info:
+                reply_text, message_id = reply_info
+                # ИСПРАВЛЕНО: экранирование символа #
+                await query.edit_message_text(
+                    f"🔄 *Несколько ответов на ответ* \\#{reply_id}\n\n*Оригинальный ответ\\:*\n{format_as_quote(reply_text)}\n\nВведите первый ответ\\:\n\n_Вы можете отправлять несколько ответов подряд\\. Для завершения нажмите \"Завершить ответы\"_",
+                    parse_mode='MarkdownV2',
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("⏹️ Завершить ответы", callback_data=f"end_multi_reply_to_reply_{reply_id}")],
+                        [InlineKeyboardButton("🔙 Назад", callback_data=f"view_replies_{message_id}")]
+                    ])
+                )
+            return
+
+        elif data.startswith("end_multi_reply_to_reply_"):
+            reply_id = int(data.replace("end_multi_reply_to_reply_", ""))
+            count = context.user_data.get('multi_reply_count', 0)
+            context.user_data.pop('replying_to_reply', None)
+            context.user_data.pop('reply_mode', None)
+            context.user_data.pop('multi_reply_count', None)
+            
+            reply_info = run_query("SELECT r.message_id FROM replies r WHERE r.reply_id = ?", (reply_id,), fetch="one")
+            message_id = reply_info[0] if reply_info else None
+            
+            await query.edit_message_text(
+                f"✅ *Режим ответов завершен*\n\nОтправлено ответов\\: {count}\n\nОтветы доставлены анонимно\\!",
+                parse_mode='MarkdownV2',
+                reply_markup=message_details_keyboard(message_id) if message_id else back_to_main_keyboard()
+            )
             return
 
         # АДМИН ПАНЕЛЬ
@@ -1871,9 +2082,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         created_str = format_datetime(created)
                         # ИСПРАВЛЕНО: экранирование символа #
                         header = f"*#{i+1}* \\| 🕒 `{created_str}`\n"
-                        header += f"*От\\:* {escape_markdown(from_user or from_name or 'Аноним')}\n"
-                        header += f"*Кому\\:* {escape_markdown(to_user or to_name or 'Аноним')}\n"
-                        header += f"*Ссылка\\:* {escape_markdown(link_title or 'N/A')}\n"
+                        header += f"*От\\:* {escape_markdown_v2(from_user or from_name or 'Аноним')}\n"
+                        header += f"*Кому\\:* {escape_markdown_v2(to_user or to_name or 'Аноним')}\n"
+                        header += f"*Ссылка\\:* {escape_markdown_v2(link_title or 'N/A')}\n"
                         
                         if msg_type == 'text':
                             await query.message.reply_text(f"{header}\n{format_as_quote(msg_text)}", parse_mode='MarkdownV2')
@@ -1882,7 +2093,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             if file_size:
                                 file_info += f" \\({(file_size or 0) // 1024} KB\\)"
                             if file_name:
-                                file_info += f"\n*Файл\\:* {escape_markdown(file_name)}"
+                                file_info += f"\n*Файл\\:* {escape_markdown_v2(file_name)}"
                             
                             caption = f"{header}{file_info}"
                             await query.message.reply_text(f"{caption}\n\n*Содержание\\:* {format_as_quote(msg_text)}", parse_mode='MarkdownV2')
@@ -1962,6 +2173,64 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
+        # Ответ на ответ (одиночный режим)
+        if 'replying_to_reply' in context.user_data and context.user_data.get('reply_mode') == 'single_reply':
+            reply_id = context.user_data.pop('replying_to_reply')
+            context.user_data.pop('reply_mode', None)
+            
+            # Получаем информацию об ответе
+            reply_info = run_query("SELECT r.message_id, r.from_user_id, r.reply_text FROM replies r WHERE r.reply_id = ?", (reply_id,), fetch="one")
+            if reply_info:
+                message_id, original_reply_user_id, original_reply_text = reply_info
+                
+                # Сохраняем новый ответ
+                new_reply_id = save_reply(message_id, user.id, text)
+                
+                # Отправляем уведомление автору оригинального ответа
+                try:
+                    reply_notification = f"💬 *Получен ответ на ваш ответ\\:*\n{format_as_quote(original_reply_text)}\n\n*Новый ответ\\:*\n{format_as_quote(text)}"
+                    await context.bot.send_message(original_reply_user_id, reply_notification, parse_mode='MarkdownV2')
+                except Exception as e:
+                    logging.error(f"Failed to send reply notification: {e}")
+            
+            await update.message.reply_text("✅ Ваш ответ на ответ отправлен анонимно\\!", reply_markup=main_keyboard(), parse_mode='MarkdownV2')
+            return
+
+        # Ответ на ответ (режим нескольких ответов)
+        if 'replying_to_reply' in context.user_data and context.user_data.get('reply_mode') == 'multi_reply':
+            reply_id = context.user_data['replying_to_reply']
+            
+            # Получаем информацию об ответе
+            reply_info = run_query("SELECT r.message_id, r.from_user_id, r.reply_text FROM replies r WHERE r.reply_id = ?", (reply_id,), fetch="one")
+            if reply_info:
+                message_id, original_reply_user_id, original_reply_text = reply_info
+                
+                # Сохраняем новый ответ
+                save_reply(message_id, user.id, text)
+                
+                current_count = context.user_data.get('multi_reply_count', 0)
+                context.user_data['multi_reply_count'] = current_count + 1
+                
+                # Отправляем уведомление автору оригинального ответа
+                try:
+                    # ИСПРАВЛЕНО: экранирование символа #
+                    reply_notification = f"💬 *Получен ответ на ваш ответ\\:*\n{format_as_quote(original_reply_text)}\n\n*Ответ #{current_count + 1}\\:*\n{format_as_quote(text)}"
+                    await context.bot.send_message(original_reply_user_id, reply_notification, parse_mode='MarkdownV2')
+                except Exception as e:
+                    logging.error(f"Failed to send reply notification: {e}")
+            
+            # ИСПРАВЛЕНО: экранирование символа #
+            await update.message.reply_text(
+                f"✅ *Ответ на ответ #{current_count + 1} отправлен\\!*\n\nМожете отправить следующий ответ или завершить режим ответов\\.",
+                parse_mode='MarkdownV2',
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔄 Продолжить ответы", callback_data=f"continue_reply_to_reply_{reply_id}")],
+                    [InlineKeyboardButton("⏹️ Завершить ответы", callback_data=f"end_multi_reply_to_reply_{reply_id}")],
+                    [InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]
+                ])
+            )
+            return
+
         # Создание ссылки
         if context.user_data.get('creating_link'):
             stage = context.user_data.get('link_stage')
@@ -1977,7 +2246,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 bot_username = context.bot.username
                 link_url = f"https://t.me/{bot_username}?start={link_id}"
                 await update.message.reply_text(
-                    f"✅ *Ссылка создана\\!*\n\n📝 *{escape_markdown(title)}*\n📋 {escape_markdown(text)}\n\n🔗 `{escape_markdown(link_url)}`\n\nПоделитесь ей, чтобы получать сообщения\\!",
+                    f"✅ *Ссылка создана\\!*\n\n📝 *{escape_markdown_v2(title)}*\n📋 {escape_markdown_v2(text)}\n\n🔗 `{escape_markdown_v2(link_url)}`\n\nПоделитесь ей, чтобы получать сообщения\\!",
                     parse_mode='MarkdownV2', 
                     reply_markup=main_keyboard()
                 )
@@ -2014,7 +2283,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 except Exception as e:
                     logging.error(f"Failed to send message notification: {e}")
                 
-                admin_notification = f"📨 *Новое сообщение*\nОт\\: {escape_markdown(user.username or user.first_name or 'Аноним')} \\> Кому\\: {escape_markdown(link_info[4] or 'Аноним')}\n\n{format_as_quote(text)}"
+                admin_notification = f"📨 *Новое сообщение*\nОт\\: {escape_markdown_v2(user.username or user.first_name or 'Аноним')} \\> Кому\\: {escape_markdown_v2(link_info[4] or 'Аноним')}\n\n{format_as_quote(text)}"
                 await context.bot.send_message(ADMIN_ID, admin_notification, parse_mode='MarkdownV2')
                 
                 await update.message.reply_text("✅ Ваше сообщение отправлено анонимно\\!", reply_markup=main_keyboard(), parse_mode='MarkdownV2')
@@ -2059,10 +2328,10 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if file_size:
                     file_info = f" \\({(file_size or 0) // 1024} KB\\)"
                 if file_name:
-                    file_info += f"\n📄 `{escape_markdown(file_name)}`"
+                    file_info += f"\n📄 `{escape_markdown_v2(file_name)}`"
                 
                 user_caption = f"📨 *Новый анонимный {msg_type}*{file_info}\n\n{format_as_quote(caption)}"
-                admin_caption = f"📨 *Новый {msg_type}*\nОт\\: {escape_markdown(user.username or user.first_name or 'Аноним')} \\> Кому\\: {escape_markdown(link_info[4] or 'Аноним')}{file_info}\n\n{format_as_quote(caption)}"
+                admin_caption = f"📨 *Новый {msg_type}*\nОт\\: {escape_markdown_v2(user.username or user.first_name or 'Аноним')} \\> Кому\\: {escape_markdown_v2(link_info[4] or 'Аноним')}{file_info}\n\n{format_as_quote(caption)}"
                 
                 try:
                     if msg_type == 'photo': 
