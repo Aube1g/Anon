@@ -21,6 +21,9 @@ ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME")
 ADMIN_ID = int(os.environ.get("ADMIN_ID")) if os.environ.get("ADMIN_ID") else None
 ADMIN_PASSWORD = "sirok228"
 
+# --- Глобальная переменная для остановки бота ---
+bot_shutdown_requested = False
+
 # --- НАСТРОЙКИ ДЛЯ ХРАНЕНИЯ БД НА GITHUB ---
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
 GITHUB_REPO = os.environ.get("GITHUB_REPO")
@@ -1551,9 +1554,6 @@ def back_to_main_keyboard():
 def back_to_admin_keyboard():
     return InlineKeyboardMarkup([[InlineKeyboardButton("🔙 В админку", callback_data="admin_panel")]])
 
-# Глобальная переменная для остановки бота
-bot_shutdown_requested = False
-
 # --- ОСНОВНЫЕ ОБРАБОТЧИКИ ---
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1594,8 +1594,6 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Произошла ошибка\\. Попробуйте позже\\.", parse_mode='MarkdownV2')
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global bot_shutdown_requested
-    
     try:
         query = update.callback_query
         await query.answer()
@@ -1816,8 +1814,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global bot_shutdown_requested
-    
     try:
         # Проверка на остановку бота
         if bot_shutdown_requested:
@@ -1898,8 +1894,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Произошла ошибка\\. Попробуйте позже\\.", parse_mode='MarkdownV2')
 
 async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global bot_shutdown_requested
-    
     try:
         # Проверка на остановку бота
         if bot_shutdown_requested:
