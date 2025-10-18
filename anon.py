@@ -944,7 +944,6 @@ def escape_markdown(text: str) -> str:
     """Экранирует специальные символы для MarkdownV2"""
     if not text: 
         return ""
-    # Экранируем все специальные символы MarkdownV2
     escape_chars = r'_*[]()~`>#+-=|{}.!'
     return re.sub(f'([{re.escape(escape_chars)}])', r'\\\1', str(text))
 
@@ -1051,9 +1050,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if links:
                 text = "🔗 *Ваши анонимные ссылки:*\n\n"
                 for link in links:
-                    link_url = f"https://t\\.me/{context\\.bot\\.username}\\?start={link[0]}"
+                    bot_username = context.bot.username
+                    link_url = f"https://t.me/{bot_username}?start={link[0]}"
                     created = format_datetime(link[3])
-                    text += f"📝 *{escape_markdown(link[1])}*\n📋 {escape_markdown(link[2])}\n🔗 `{link_url}`\n🕒 `{created}`\n\n"
+                    text += f"📝 *{escape_markdown(link[1])}*\n📋 {escape_markdown(link[2])}\n🔗 `{escape_markdown(link_url)}`\n🕒 `{created}`\n\n"
                 await query.edit_message_text(text, parse_mode='MarkdownV2', reply_markup=back_to_main_keyboard())
             else:
                 await query.edit_message_text("У вас пока нет созданных ссылок\\.", reply_markup=back_to_main_keyboard(), parse_mode='MarkdownV2')
@@ -1356,9 +1356,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 context.user_data.pop('creating_link')
                 context.user_data.pop('link_stage')
                 link_id = create_anon_link(user.id, title, text)
-                link_url = f"https://t\\.me/{context\\.bot\\.username}\\?start={link_id}"
+                bot_username = context.bot.username
+                link_url = f"https://t.me/{bot_username}?start={link_id}"
                 await update.message.reply_text(
-                    f"✅ *Ссылка создана\\!*\n\n📝 *{escape_markdown(title)}*\n📋 {escape_markdown(text)}\n\n🔗 `{link_url}`\n\nПоделитесь ей, чтобы получать сообщения\\!",
+                    f"✅ *Ссылка создана\\!*\n\n📝 *{escape_markdown(title)}*\n📋 {escape_markdown(text)}\n\n🔗 `{escape_markdown(link_url)}`\n\nПоделитесь ей, чтобы получать сообщения\\!",
                     parse_mode='MarkdownV2', 
                     reply_markup=main_keyboard()
                 )
