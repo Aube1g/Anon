@@ -491,8 +491,6 @@ def parse_formatting(text):
     text = re.sub(r'\*(.*?)\*', r'<i>\1</i>', text)
     text = re.sub(r'_(.*?)_', r'<i>\1</i>', text)
     
-    # Подчеркивание: __текст__ (уже использовано для жирного, оставляем как есть)
-    
     # Зачеркивание: ~~текст~~
     text = re.sub(r'~~(.*?)~~', r'<s>\1</s>', text)
     
@@ -504,6 +502,24 @@ def parse_formatting(text):
     
     # Цитата: >>текст или >>>текст
     text = re.sub(r'>>>?(.*?)(?=\n|$)', r'<blockquote>\1</blockquote>', text)
+    
+    return text
+
+def escape_html_safe(text):
+    """Безопасное экранирование HTML с сохранением форматирования"""
+    if not text:
+        return ""
+    
+    # Сначала экранируем все
+    text = html.escape(text)
+    
+    # Затем восстанавливаем форматирование
+    text = re.sub(r'&lt;b&gt;(.*?)&lt;/b&gt;', r'<b>\1</b>', text)
+    text = re.sub(r'&lt;i&gt;(.*?)&lt;/i&gt;', r'<i>\1</i>', text)
+    text = re.sub(r'&lt;s&gt;(.*?)&lt;/s&gt;', r'<s>\1</s>', text)
+    text = re.sub(r'&lt;code&gt;(.*?)&lt;/code&gt;', r'<code>\1</code>', text)
+    text = re.sub(r'&lt;spoiler&gt;(.*?)&lt;/spoiler&gt;', r'<spoiler>\1</spoiler>', text)
+    text = re.sub(r'&lt;blockquote&gt;(.*?)&lt;/blockquote&gt;', r'<blockquote>\1</blockquote>', text)
     
     return text
 
@@ -1037,6 +1053,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await context.bot.send_message(to_user, notification, parse_mode='MarkdownV2')
                 except Exception as e:
                     logging.error(f"Failed to send reply notification: {e}")
+                    # Если не удалось отправить уведомление, просто продолжаем
                 
                 await update.message.reply_text("✅ *Ответ отправлен\\!*", parse_mode='MarkdownV2', reply_markup=main_keyboard())
             return
@@ -1073,6 +1090,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await context.bot.send_message(link_info[1], notification, parse_mode='MarkdownV2', reply_markup=message_actions_keyboard(msg_id))
                 except Exception as e:
                     logging.error(f"Failed to send message notification: {e}")
+                    # Если не удалось отправить уведомление, все равно сообщаем пользователю
                 
                 await update.message.reply_text("✅ Ваше сообщение отправлено анонимно\\!", reply_markup=main_keyboard(), parse_mode='MarkdownV2')
             return
@@ -1154,6 +1172,7 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         await context.bot.send_voice(link_info[1], file_id, caption=user_caption, parse_mode='MarkdownV2', reply_markup=message_actions_keyboard(msg_id))
                 except Exception as e: 
                     logging.error(f"Failed to send media to user: {e}")
+                    # Если не удалось отправить, все равно сообщаем пользователю
                 
                 await update.message.reply_text("✅ Ваше медиа отправлено анонимно\\!", reply_markup=main_keyboard(), parse_mode='MarkdownV2')
 
