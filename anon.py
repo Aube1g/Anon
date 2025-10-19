@@ -475,6 +475,35 @@ def format_datetime(dt_string):
     krasnoyarsk_time = dt + timedelta(hours=7)
     return krasnoyarsk_time.strftime("%Y-%m-%d %H:%M:%S") + " (Krasnoyarsk)"
 
+def parse_formatting(text):
+    """Парсит форматирование текста для Telegram"""
+    if not text:
+        return text
+    
+    # Жирный текст: **текст** или __текст__
+    text = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', text)
+    text = re.sub(r'__(.*?)__', r'<b>\1</b>', text)
+    
+    # Курсив: *текст* или _текст_
+    text = re.sub(r'\*(.*?)\*', r'<i>\1</i>', text)
+    text = re.sub(r'_(.*?)_', r'<i>\1</i>', text)
+    
+    # Подчеркивание: __текст__ (уже использовано для жирного, оставляем как есть)
+    
+    # Зачеркивание: ~~текст~~
+    text = re.sub(r'~~(.*?)~~', r'<s>\1</s>', text)
+    
+    # Моноширинный (код): `текст`
+    text = re.sub(r'`(.*?)`', r'<code>\1</code>', text)
+    
+    # Скрытый текст (спойлер): ||текст||
+    text = re.sub(r'\|\|(.*?)\|\|', r'<spoiler>\1</spoiler>', text)
+    
+    # Цитата: >>текст или >>>текст
+    text = re.sub(r'>>>?(.*?)(?=\n|$)', r'<blockquote>\1</blockquote>', text)
+    
+    return text
+
 # --- КЛАВИАТУРЫ ---
 
 def main_keyboard():
@@ -523,6 +552,27 @@ def delete_confirmation_keyboard(item_type, item_id):
         [InlineKeyboardButton("❌ Отмена", callback_data="cancel_delete")]
     ])
 
+def broadcast_formatting_keyboard():
+    """Клавиатура форматирования для рассылки"""
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("Жирный **текст**", callback_data="format_bold"),
+            InlineKeyboardButton("Курсив *текст*", callback_data="format_italic")
+        ],
+        [
+            InlineKeyboardButton("Зачеркивание ~~текст~~", callback_data="format_strike"),
+            InlineKeyboardButton("Скрытый ||текст||", callback_data="format_spoiler")
+        ],
+        [
+            InlineKeyboardButton("Моноширинный `текст`", callback_data="format_code"),
+            InlineKeyboardButton("Цитата >>текст", callback_data="format_quote")
+        ],
+        [
+            InlineKeyboardButton("✅ Отправить", callback_data="broadcast_send"),
+            InlineKeyboardButton("❌ Отмена", callback_data="admin_panel")
+        ]
+    ])
+
 # --- ОСНОВНЫЕ ОБРАБОТЧИКИ ---
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -550,12 +600,28 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         user = update.effective_user
         if user.username == ADMIN_USERNAME or user.id == ADMIN_ID:
-            context.user_data['admin_authenticated'] = True
-            await update.message.reply_text(
-                "🛠️ *Панель администратора*",
-                reply_markup=admin_keyboard(),
-                parse_mode='MarkdownV2'
-            )
+            # Проверяем пароль, если он еще не введен
+            if not context.user_data.get('admin_authenticated'):
+                if context.args and context.args[0] == ADMIN_PASSWORD:
+                    context.user_data['admin_authenticated'] = True
+                    await update.message.reply_text(
+                        "✅ *Пароль верный! Добро пожаловать в панель администратора*",
+                        reply_markup=admin_keyboard(),
+                        parse_mode='MarkdownV2'
+                    )
+                else:
+                    await update.message.reply_text(
+                        "🔐 *Требуется пароль для доступа к админке*\n\n"
+                        f"Используйте: `/admin {ADMIN_PASSWORD}`",
+                        parse_mode='MarkdownV2'
+                    )
+                    return
+            else:
+                await update.message.reply_text(
+                    "🛠️ *Панель администратора*",
+                    reply_markup=admin_keyboard(),
+                    parse_mode='MarkdownV2'
+                )
         else:
             await update.message.reply_text("⛔️ Доступ запрещен\\.", parse_mode='MarkdownV2')
     except Exception as e:
@@ -715,6 +781,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # АДМИН ПАНЕЛЬ
         if is_admin:
+            # Проверка аутентификации админа
+            if not context.user_data.get('admin_authenticated'):
+                await query.edit_message_text(
+                    "🔐 *Требуется аутентификация*\n\n"
+                    f"Используйте команду: `/admin {ADMIN_PASSWORD}`",
+                    parse_mode='MarkdownV2'
+                )
+                return
+
             if data == "admin_stats":
                 stats = get_admin_stats()
                 text = f"""📊 *Статистика бота\\:*
@@ -824,11 +899,89 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             elif data == "admin_broadcast":
                 context.user_data['broadcasting'] = True
+                context.user_data['broadcast_message'] = ""
                 await query.edit_message_text(
-                    "📢 *Режим рассылки*\n\nВведите сообщение для отправки всем пользователям\\:",
+                    "📢 *Режим рассылки*\n\n"
+                    "💡 *Доступные форматы:*\n"
+                    "• **Жирный** текст: **текст** или __текст__\n"
+                    "• *Курсив*: *текст* или _текст_\n"
+                    "• ~~Зачеркивание~~: ~~текст~~\n"
+                    "• Скрытый текст: ||текст||\n"
+                    "• `Моноширинный`: `текст`\n"
+                    "• Цитата: >>текст\n\n"
+                    "Введите сообщение для рассылки:",
                     parse_mode='MarkdownV2', 
-                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Отмена", callback_data="admin_panel")]])
+                    reply_markup=broadcast_formatting_keyboard()
                 )
+                return
+            
+            # Обработка форматирования рассылки
+            elif data.startswith("format_"):
+                if context.user_data.get('broadcasting'):
+                    format_type = data.replace("format_", "")
+                    current_text = context.user_data.get('broadcast_message', '')
+                    
+                    format_examples = {
+                        'bold': '**жирный текст**',
+                        'italic': '*курсив*',
+                        'strike': '~~зачеркнутый~~',
+                        'spoiler': '||скрытый текст||',
+                        'code': '`моноширинный`',
+                        'quote': '>>цитата'
+                    }
+                    
+                    example = format_examples.get(format_type, '')
+                    new_text = current_text + example
+                    context.user_data['broadcast_message'] = new_text
+                    
+                    await query.edit_message_text(
+                        f"📢 *Сообщение для рассылки:*\n\n{new_text}\n\n"
+                        "Используйте кнопки для добавления форматирования или введите текст:",
+                        parse_mode='MarkdownV2',
+                        reply_markup=broadcast_formatting_keyboard()
+                    )
+                return
+            
+            elif data == "broadcast_send":
+                if context.user_data.get('broadcasting'):
+                    message_text = context.user_data.get('broadcast_message', '')
+                    if not message_text.strip():
+                        await query.answer("Сообщение не может быть пустым!", show_alert=True)
+                        return
+                    
+                    context.user_data.pop('broadcasting')
+                    context.user_data.pop('broadcast_message')
+                    
+                    # Парсим форматирование
+                    formatted_text = parse_formatting(message_text)
+                    
+                    users = get_all_users_for_admin()
+                    success_count = 0
+                    failed_count = 0
+                    
+                    await query.edit_message_text(f"🔄 *Отправка рассылки...*", parse_mode='MarkdownV2')
+                    
+                    for u in users:
+                        try:
+                            await context.bot.send_message(
+                                u[0], 
+                                f"📢 *Оповещение от администратора*\n\n{formatted_text}", 
+                                parse_mode='HTML'
+                            )
+                            success_count += 1
+                            # Небольшая задержка чтобы не превысить лимиты Telegram
+                            await asyncio.sleep(0.1)
+                        except Exception as e:
+                            logging.error(f"Ошибка отправки пользователю {u[0]}: {e}")
+                            failed_count += 1
+                    
+                    await query.edit_message_text(
+                        f"✅ *Рассылка завершена!*\n\n"
+                        f"• 📨 Успешно отправлено: {success_count}\n"
+                        f"• ❌ Не удалось отправить: {failed_count}",
+                        parse_mode='MarkdownV2', 
+                        reply_markup=admin_keyboard()
+                    )
                 return
 
     except Exception as e:
@@ -910,18 +1063,19 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # Рассылка от админа
         if context.user_data.get('broadcasting') and is_admin:
-            context.user_data.pop('broadcasting')
-            # Здесь должна быть логика рассылки всем пользователям
-            users = get_all_users_for_admin()
-            success_count = 0
-            for u in users:
-                try:
-                    await context.bot.send_message(u[0], f"📢 *Оповещение от администратора*\n\n{text}", parse_mode='MarkdownV2')
-                    success_count += 1
-                except:
-                    continue
+            context.user_data['broadcast_message'] = text
+            formatted_text = parse_formatting(text)
             
-            await update.message.reply_text(f"✅ *Сообщение отправлено {success_count} пользователям\\!*", parse_mode='MarkdownV2', reply_markup=admin_keyboard())
+            await update.message.reply_text(
+                f"📢 *Предпросмотр рассылки:*\n\n{formatted_text}\n\n"
+                "✅ *Сообщение готово к отправке*\n\n"
+                "Используйте кнопку ниже для отправки:",
+                parse_mode='HTML',
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🚀 Отправить рассылку", callback_data="broadcast_send")],
+                    [InlineKeyboardButton("✏️ Редактировать", callback_data="admin_broadcast")]
+                ])
+            )
             return
 
         await update.message.reply_text("Используйте кнопки для навигации\\.", reply_markup=main_keyboard(), parse_mode='MarkdownV2')
