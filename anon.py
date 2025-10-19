@@ -480,6 +480,9 @@ def parse_formatting(text):
     if not text:
         return text
     
+    # Экранируем HTML символы
+    text = html.escape(text)
+    
     # Жирный текст: **текст** или __текст__
     text = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', text)
     text = re.sub(r'__(.*?)__', r'<b>\1</b>', text)
@@ -604,17 +607,19 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not context.user_data.get('admin_authenticated'):
                 if context.args and context.args[0] == ADMIN_PASSWORD:
                     context.user_data['admin_authenticated'] = True
+                    # Удаляем сообщение с паролем
+                    try:
+                        await update.message.delete()
+                    except:
+                        pass
                     await update.message.reply_text(
-                        "✅ *Пароль верный! Добро пожаловать в панель администратора*",
+                        "✅ *Добро пожаловать в панель администратора*",
                         reply_markup=admin_keyboard(),
                         parse_mode='MarkdownV2'
                     )
                 else:
-                    await update.message.reply_text(
-                        "🔐 *Требуется пароль для доступа к админке*\n\n"
-                        f"Используйте: `/admin {ADMIN_PASSWORD}`",
-                        parse_mode='MarkdownV2'
-                    )
+                    # Не показываем информацию о пароле, просто говорим что доступ запрещен
+                    await update.message.reply_text("⛔️ *Доступ запрещен*", parse_mode='MarkdownV2')
                     return
             else:
                 await update.message.reply_text(
@@ -623,7 +628,7 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     parse_mode='MarkdownV2'
                 )
         else:
-            await update.message.reply_text("⛔️ Доступ запрещен\\.", parse_mode='MarkdownV2')
+            await update.message.reply_text("⛔️ *Доступ запрещен*", parse_mode='MarkdownV2')
     except Exception as e:
         logging.error(f"Ошибка в команде admin: {e}")
         await update.message.reply_text("❌ Произошла ошибка\\. Попробуйте позже\\.", parse_mode='MarkdownV2')
@@ -784,13 +789,20 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Проверка аутентификации админа
             if not context.user_data.get('admin_authenticated'):
                 await query.edit_message_text(
-                    "🔐 *Требуется аутентификация*\n\n"
-                    f"Используйте команду: `/admin {ADMIN_PASSWORD}`",
+                    "🔐 *Требуется аутентификация*\n\nИспользуйте команду /admin с паролем",
                     parse_mode='MarkdownV2'
                 )
                 return
 
-            if data == "admin_stats":
+            if data == "admin_panel":
+                await query.edit_message_text(
+                    "🛠️ *Панель администратора*",
+                    reply_markup=admin_keyboard(),
+                    parse_mode='MarkdownV2'
+                )
+                return
+
+            elif data == "admin_stats":
                 stats = get_admin_stats()
                 text = f"""📊 *Статистика бота\\:*
 
@@ -808,6 +820,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 • Документов\\: {stats['documents']}
 • Голосовых\\: {stats['voice']}"""
                 await query.edit_message_text(text, parse_mode='MarkdownV2', reply_markup=admin_keyboard())
+                return
             
             elif data == "admin_users":
                 users = get_all_users_for_admin()
@@ -934,10 +947,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     new_text = current_text + example
                     context.user_data['broadcast_message'] = new_text
                     
+                    # Показываем предпросмотр с HTML разметкой
+                    preview_text = parse_formatting(new_text)
+                    
                     await query.edit_message_text(
-                        f"📢 *Сообщение для рассылки:*\n\n{new_text}\n\n"
+                        f"📢 *Сообщение для рассылки:*\n\n{preview_text}\n\n"
                         "Используйте кнопки для добавления форматирования или введите текст:",
-                        parse_mode='MarkdownV2',
+                        parse_mode='HTML',
                         reply_markup=broadcast_formatting_keyboard()
                     )
                 return
@@ -976,9 +992,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             failed_count += 1
                     
                     await query.edit_message_text(
-                        f"✅ *Рассылка завершена!*\n\n"
-                        f"• 📨 Успешно отправлено: {success_count}\n"
-                        f"• ❌ Не удалось отправить: {failed_count}",
+                        f"✅ *Рассылка завершена\\!*\n\n"
+                        f"• 📨 Успешно отправлено\\: {success_count}\n"
+                        f"• ❌ Не удалось отправить\\: {failed_count}",
                         parse_mode='MarkdownV2', 
                         reply_markup=admin_keyboard()
                     )
