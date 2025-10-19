@@ -497,6 +497,434 @@ def get_all_data_for_html():
     
     return data
 
+# --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
+
+def escape_markdown_v2(text: str) -> str:
+    """Экранирует специальные символы для MarkdownV2"""
+    if not text: 
+        return ""
+    escape_chars = r'_*[]()~`>#+-=|{}.!'
+    return re.sub(f'([{re.escape(escape_chars)}])', r'\\\1', str(text))
+
+def format_as_quote(text: str) -> str:
+    if not text: 
+        return ""
+    escaped_text = escape_markdown_v2(text)
+    return '\n'.join([f"> {line}" for line in escaped_text.split('\n')])
+
+def format_datetime(dt_string):
+    """Форматирует дату-время с точностью до секунд (Красноярское время UTC+7)"""
+    if isinstance(dt_string, str):
+        try:
+            dt = datetime.fromisoformat(dt_string.replace('Z', '+00:00'))
+        except:
+            return dt_string
+    else:
+        dt = dt_string
+    
+    # Добавляем 7 часов для Красноярского времени
+    krasnoyarsk_time = dt + timedelta(hours=7)
+    return krasnoyarsk_time.strftime("%Y-%m-%d %H:%M:%S") + " (KRAT)"
+
+# --- КЛАВИАТУРЫ ---
+
+def main_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🟣 Главное меню", callback_data="main_menu")],
+        [InlineKeyboardButton("🔗 Мои ссылки", callback_data="my_links")],
+        [InlineKeyboardButton("➕ Создать ссылку", callback_data="create_link")],
+        [InlineKeyboardButton("📨 Мои сообщения", callback_data="my_messages")]
+    ])
+
+def message_details_keyboard(message_id, user_id, is_admin=False):
+    """Клавиатура для сообщения с опцией удаления"""
+    buttons = [
+        [InlineKeyboardButton("💬 Ответить", callback_data=f"reply_{message_id}")],
+        [InlineKeyboardButton("📋 Просмотреть ответы", callback_data=f"view_replies_{message_id}")],
+    ]
+    
+    # Добавляем кнопку удаления если пользователь владелец или админ
+    message_owner = get_message_owner(message_id)
+    if message_owner and (message_owner[0] == user_id or is_admin):
+        buttons.append([InlineKeyboardButton("🗑️ Удалить сообщение", callback_data=f"confirm_delete_message_{message_id}")])
+    
+    buttons.append([InlineKeyboardButton("🔙 Назад к сообщениям", callback_data="my_messages")])
+    
+    return InlineKeyboardMarkup(buttons)
+
+def admin_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📊 Статистика", callback_data="admin_stats")],
+        [InlineKeyboardButton("👥 Управление пользователями", callback_data="admin_users_management")],
+        [InlineKeyboardButton("🎨 HTML Отчет", callback_data="admin_html_report")],
+        [InlineKeyboardButton("📢 Оповещение", callback_data="admin_broadcast")],
+        [InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]
+    ])
+
+def delete_confirmation_keyboard(item_type, item_id):
+    """Клавиатура подтверждения удаления"""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Да, удалить", callback_data=f"delete_{item_type}_{item_id}")],
+        [InlineKeyboardButton("❌ Отмена", callback_data="cancel_delete")]
+    ])
+
+def back_to_main_keyboard():
+    return InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]])
+
+def back_to_admin_keyboard():
+    return InlineKeyboardMarkup([[InlineKeyboardButton("🔙 В админку", callback_data="admin_panel")]])
+
+# --- ОСНОВНЫЕ ОБРАБОТЧИКИ ---
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        user = update.effective_user
+        save_user(user.id, user.username, user.first_name)
+        
+        if context.args:
+            link_id = context.args[0]
+            link_info = get_link_info(link_id)
+            if link_info:
+                context.user_data['current_link'] = link_id
+                text = f"🔗 *Анонимная ссылка*\n\n📝 *{escape_markdown_v2(link_info[2])}*\n📋 {escape_markdown_v2(link_info[3])}\n\n✍️ Напишите анонимное сообщение или отправьте медиафайл\\."
+                await update.message.reply_text(text, parse_mode='MarkdownV2', reply_markup=back_to_main_keyboard())
+                return
+        
+        text = "👋 *Добро пожаловать в Анонимный Бот\\!*\n\nСоздавайте ссылки для получения анонимных сообщений и вопросов\\."
+        await update.message.reply_text(text, reply_markup=main_keyboard(), parse_mode='MarkdownV2')
+    except Exception as e:
+        logging.error(f"Ошибка в команде start: {e}")
+        await update.message.reply_text("❌ Произошла ошибка\\. Попробуйте позже\\.", parse_mode='MarkdownV2')
+
+async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик команды /admin"""
+    try:
+        user = update.effective_user
+        if user.username == ADMIN_USERNAME or user.id == ADMIN_ID:
+            context.user_data['admin_authenticated'] = False
+            await update.message.reply_text(
+                "🔐 *Панель администратора*\n\nВведите пароль для доступа:",
+                parse_mode='MarkdownV2',
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data="main_menu")]])
+            )
+        else:
+            await update.message.reply_text("⛔️ Доступ запрещен\\.", parse_mode='MarkdownV2')
+    except Exception as e:
+        logging.error(f"Ошибка в команде admin: {e}")
+        await update.message.reply_text("❌ Произошла ошибка\\. Попробуйте позже\\.", parse_mode='MarkdownV2')
+
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        query = update.callback_query
+        await query.answer()
+        user = query.from_user
+        data = query.data
+        is_admin = user.username == ADMIN_USERNAME or user.id == ADMIN_ID
+
+        # Основные команды меню
+        if data == "main_menu":
+            text = "🎭 *Главное меню*"
+            await query.edit_message_text(text, reply_markup=main_keyboard(), parse_mode='MarkdownV2')
+            return
+        
+        elif data == "my_links":
+            links = get_user_links(user.id)
+            if links:
+                text = "🔗 *Ваши анонимные ссылки:*\n\n"
+                for link in links:
+                    bot_username = context.bot.username
+                    link_url = f"https://t.me/{bot_username}?start={link[0]}"
+                    created = format_datetime(link[3])
+                    text += f"📝 *{escape_markdown_v2(link[1])}*\n📋 {escape_markdown_v2(link[2])}\n🔗 `{escape_markdown_v2(link_url)}`\n🕒 `{created}`\n\n"
+                    # Добавляем кнопку удаления для каждой ссылки
+                    text += f"🗑️ *Удалить ссылку* \\- /delete\\_link\\_{link[0]}\n\n"
+                await query.edit_message_text(text, parse_mode='MarkdownV2', reply_markup=back_to_main_keyboard())
+            else:
+                await query.edit_message_text("У вас пока нет созданных ссылок\\.", reply_markup=back_to_main_keyboard(), parse_mode='MarkdownV2')
+            return
+        
+        elif data == "my_messages":
+            messages = get_user_messages_with_replies(user.id)
+            if messages:
+                text = "📨 *Ваши последние сообщения:*\n\n"
+                for msg in messages:
+                    msg_id, msg_text, msg_type, file_id, file_size, file_name, created, link_title, link_id, reply_count = msg
+                    
+                    type_icon = {"text": "📝", "photo": "🖼️", "video": "🎥", "document": "📄", "voice": "🎤"}.get(msg_type, "📄")
+                    
+                    preview = msg_text or f"*{msg_type}*"
+                    if len(preview) > 50:
+                        preview = preview[:50] + "\\.\\.\\."
+                        
+                    created_str = format_datetime(created)
+                    text += f"{type_icon} *{escape_markdown_v2(link_title)}*\n{format_as_quote(preview)}\n🕒 `{created_str}` \\| 💬 Ответов\\: {reply_count}\n\n"
+                
+                await query.edit_message_text(text, parse_mode='MarkdownV2', reply_markup=back_to_main_keyboard())
+            else:
+                await query.edit_message_text("У вас пока нет сообщений\\.", parse_mode='MarkdownV2', reply_markup=back_to_main_keyboard())
+            return
+        
+        elif data == "create_link":
+            context.user_data['creating_link'] = True
+            context.user_data['link_stage'] = 'title'
+            await query.edit_message_text("📝 Введите *название* для вашей ссылки:", parse_mode='MarkdownV2', reply_markup=back_to_main_keyboard())
+            return
+        
+        # Управление удалением
+        elif data.startswith("confirm_delete_message_"):
+            message_id = int(data.replace("confirm_delete_message_", ""))
+            message_info = get_message_info(message_id)
+            
+            if message_info:
+                msg_text, msg_type, file_name, created, from_user, from_name, to_user, to_name, link_title = message_info
+                
+                text = f"🗑️ *Подтверждение удаления сообщения*\n\n"
+                text += f"📝 *Сообщение\\:*\n{format_as_quote(msg_text if msg_text else f'Медиафайл: {msg_type}')}\n\n"
+                text += f"👤 *От\\:* {escape_markdown_v2(from_user or from_name or 'Аноним')}\n"
+                text += f"👥 *Кому\\:* {escape_markdown_v2(to_user or to_name or 'Аноним')}\n"
+                text += f"🔗 *Ссылка\\:* {escape_markdown_v2(link_title or 'N/A')}\n"
+                text += f"🕒 *Время\\:* `{format_datetime(created)}`\n\n"
+                text += "❓ *Вы уверены, что хотите удалить это сообщение?*"
+                
+                await query.edit_message_text(text, parse_mode='MarkdownV2', 
+                                           reply_markup=delete_confirmation_keyboard("message", message_id))
+            return
+        
+        elif data.startswith("delete_message_"):
+            message_id = int(data.replace("delete_message_", ""))
+            success = deactivate_message(message_id)
+            
+            if success:
+                push_db_to_github(f"Delete message {message_id}")
+                await query.edit_message_text("✅ *Сообщение успешно удалено\\!*", 
+                                           parse_mode='MarkdownV2', 
+                                           reply_markup=back_to_main_keyboard())
+            else:
+                await query.edit_message_text("❌ *Ошибка при удалении сообщения*", 
+                                           parse_mode='MarkdownV2', 
+                                           reply_markup=back_to_main_keyboard())
+            return
+        
+        elif data == "cancel_delete":
+            await query.edit_message_text("❌ *Удаление отменено*", 
+                                       parse_mode='MarkdownV2', 
+                                       reply_markup=back_to_main_keyboard())
+            return
+
+        # АДМИН ПАНЕЛЬ
+        if is_admin:
+            if data == "admin_panel":
+                if context.user_data.get('admin_authenticated'):
+                    await query.edit_message_text("🛠️ *Панель администратора*", reply_markup=admin_keyboard(), parse_mode='MarkdownV2')
+                else:
+                    await query.edit_message_text("🔐 *Требуется аутентификация*\n\nВведите пароль:", parse_mode='MarkdownV2')
+            
+            elif data == "admin_stats":
+                if context.user_data.get('admin_authenticated'):
+                    stats = get_admin_stats()
+                    text = f"""📊 *Статистика бота\\:*
+
+👥 *Пользователи\\:*
+• Всего пользователей\\: {stats['users']}
+• Активных ссылок\\: {stats['links']}
+
+💌 *Сообщения\\:*
+• Всего сообщений\\: {stats['messages']}
+• Ответов\\: {stats['replies']}
+
+📁 *Файлы\\:*
+• Фотографий\\: {stats['photos']}
+• Видео\\: {stats['videos']}
+• Документов\\: {stats['documents']}
+• Голосовых\\: {stats['voice']}"""
+                    await query.edit_message_text(text, parse_mode='MarkdownV2', reply_markup=admin_keyboard())
+                else:
+                    await query.answer("❌ Требуется аутентификация\\!", show_alert=True)
+            
+            elif data == "admin_users_management":
+                if context.user_data.get('admin_authenticated'):
+                    users = get_all_users_for_admin()
+                    if users:
+                        text = "👥 *Управление пользователями*\n\n"
+                        for u in users[:10]:
+                            username = f"@{u[1]}" if u[1] else (u[2] or f"ID\\:{u[0]}")
+                            text += f"👤 *{escape_markdown_v2(username)}*\n🆔 `{u[0]}` \\| 📅 `{format_datetime(u[3])}`\n\n"
+                        await query.edit_message_text(text, parse_mode='MarkdownV2', reply_markup=admin_keyboard())
+                    else:
+                        await query.edit_message_text("Пользователей не найдено\\.", parse_mode='MarkdownV2', reply_markup=admin_keyboard())
+                else:
+                    await query.answer("❌ Требуется аутентификация\\!", show_alert=True)
+            
+            elif data == "admin_html_report":
+                if context.user_data.get('admin_authenticated'):
+                    await query.edit_message_text("🔄 *Генерация HTML отчета\\.\\.\\.*", parse_mode='MarkdownV2')
+                    
+                    html_content = generate_html_report()
+                    
+                    report_path = "/tmp/admin_report.html"
+                    with open(report_path, 'w', encoding='utf-8') as f:
+                        f.write(html_content)
+                    
+                    with open(report_path, 'rb') as f:
+                        await query.message.reply_document(
+                            document=f,
+                            filename=f"admin_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html",
+                            caption="🎨 *Расширенный HTML отчет администратора*\n\nОткройте файл в браузере для просмотра полной статистики с анимациями и поиском\\!",
+                            parse_mode='MarkdownV2'
+                        )
+                    
+                    await query.edit_message_text("✅ *HTML отчет сгенерирован и отправлен\\!*\n\nПроверьте файл выше\\!", parse_mode='MarkdownV2', reply_markup=admin_keyboard())
+                else:
+                    await query.answer("❌ Требуется аутентификация\\!", show_alert=True)
+            
+            elif data == "admin_broadcast":
+                if context.user_data.get('admin_authenticated'):
+                    context.user_data['broadcasting'] = True
+                    await query.edit_message_text(
+                        "📢 *Режим рассылки*\n\nВведите сообщение для отправки всем пользователям\\:",
+                        parse_mode='MarkdownV2', 
+                        reply_markup=back_to_admin_keyboard()
+                    )
+                else:
+                    await query.answer("❌ Требуется аутентификация\\!", show_alert=True)
+
+    except Exception as e:
+        logging.error(f"Ошибка в обработчике кнопок: {e}")
+        try:
+            await query.edit_message_text("❌ Произошла ошибка\\. Попробуйте позже\\.", reply_markup=main_keyboard(), parse_mode='MarkdownV2')
+        except:
+            pass
+
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        user = update.effective_user
+        text = update.message.text
+        save_user(user.id, user.username, user.first_name)
+        is_admin = user.username == ADMIN_USERNAME or user.id == ADMIN_ID
+
+        # Проверка пароля для админки
+        if text == ADMIN_PASSWORD and is_admin:
+            context.user_data['admin_authenticated'] = True
+            await update.message.reply_text(
+                "✅ *Пароль принят\\! Добро пожаловать в админ\\-панель\\.*", 
+                reply_markup=admin_keyboard(), 
+                parse_mode='MarkdownV2'
+            )
+            return
+
+        # Создание ссылки
+        if context.user_data.get('creating_link'):
+            stage = context.user_data.get('link_stage')
+            if stage == 'title':
+                context.user_data['link_title'] = text
+                context.user_data['link_stage'] = 'description'
+                await update.message.reply_text("📋 Теперь введите *описание* для ссылки:", parse_mode='MarkdownV2')
+            elif stage == 'description':
+                title = context.user_data.pop('link_title')
+                context.user_data.pop('creating_link')
+                context.user_data.pop('link_stage')
+                link_id = create_anon_link(user.id, title, text)
+                bot_username = context.bot.username
+                link_url = f"https://t.me/{bot_username}?start={link_id}"
+                await update.message.reply_text(
+                    f"✅ *Ссылка создана\\!*\n\n📝 *{escape_markdown_v2(title)}*\n📋 {escape_markdown_v2(text)}\n\n🔗 `{escape_markdown_v2(link_url)}`\n\nПоделитесь ей, чтобы получать сообщения\\!",
+                    parse_mode='MarkdownV2', 
+                    reply_markup=main_keyboard()
+                )
+            return
+
+        # Отправка анонимного сообщения
+        if context.user_data.get('current_link'):
+            link_id = context.user_data.pop('current_link')
+            link_info = get_link_info(link_id)
+            if link_info:
+                msg_id = save_message(link_id, user.id, link_info[1], text)
+                notification = f"📨 *Новое анонимное сообщение*\n\n{text}"
+                try:
+                    await context.bot.send_message(link_info[1], notification, parse_mode='MarkdownV2', reply_markup=message_details_keyboard(msg_id, link_info[1], is_admin))
+                except Exception as e:
+                    logging.error(f"Failed to send message notification: {e}")
+                
+                await update.message.reply_text("✅ Ваше сообщение отправлено анонимно\\!", reply_markup=main_keyboard(), parse_mode='MarkdownV2')
+            return
+
+        # Команды удаления через текст
+        if text.startswith('/delete_link_'):
+            link_id = text.replace('/delete_link_', '').strip()
+            link_owner = get_link_owner(link_id)
+            
+            if link_owner and (link_owner[0] == user.id or is_admin):
+                success = deactivate_link(link_id)
+                if success:
+                    push_db_to_github(f"Delete link {link_id}")
+                    await update.message.reply_text("✅ *Ссылка успешно удалена\\!*", parse_mode='MarkdownV2', reply_markup=main_keyboard())
+                else:
+                    await update.message.reply_text("❌ *Ошибка при удалении ссылки*", parse_mode='MarkdownV2', reply_markup=main_keyboard())
+            else:
+                await update.message.reply_text("⛔️ *У вас нет прав для удаления этой ссылки*", parse_mode='MarkdownV2', reply_markup=main_keyboard())
+            return
+
+        await update.message.reply_text("Используйте кнопки для навигации\\.", reply_markup=main_keyboard(), parse_mode='MarkdownV2')
+
+    except Exception as e:
+        logging.error(f"Ошибка в обработчике текста: {e}")
+        await update.message.reply_text("❌ Произошла ошибка\\. Попробуйте позже\\.", parse_mode='MarkdownV2')
+
+async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        user = update.effective_user
+        save_user(user.id, user.username, user.first_name)
+        msg = update.message
+        caption = msg.caption or ""
+        file_id, msg_type, file_size, file_name = None, "unknown", None, None
+
+        if msg.photo: 
+            file_id, msg_type = msg.photo[-1].file_id, "photo"
+            file_size = msg.photo[-1].file_size
+        elif msg.video: 
+            file_id, msg_type = msg.video.file_id, "video"
+            file_size = msg.video.file_size
+            file_name = msg.video.file_name
+        elif msg.voice: 
+            file_id, msg_type = msg.voice.file_id, "voice"
+            file_size = msg.voice.file_size
+        elif msg.document: 
+            file_id, msg_type = msg.document.file_id, "document"
+            file_size = msg.document.file_size
+            file_name = msg.document.file_name
+
+        if context.user_data.get('current_link') and file_id:
+            link_id = context.user_data.pop('current_link')
+            link_info = get_link_info(link_id)
+            if link_info:
+                msg_id = save_message(link_id, user.id, link_info[1], caption, msg_type, file_id, file_size, file_name)
+                
+                file_info = ""
+                if file_size:
+                    file_info = f" \\({(file_size or 0) // 1024} KB\\)"
+                if file_name:
+                    file_info += f"\n📄 `{escape_markdown_v2(file_name)}`"
+                
+                user_caption = f"📨 *Новый анонимный {msg_type}*{file_info}\n\n{caption}"
+                
+                try:
+                    if msg_type == 'photo': 
+                        await context.bot.send_photo(link_info[1], file_id, caption=user_caption, parse_mode='MarkdownV2', reply_markup=message_details_keyboard(msg_id, link_info[1], False))
+                    elif msg_type == 'video': 
+                        await context.bot.send_video(link_info[1], file_id, caption=user_caption, parse_mode='MarkdownV2', reply_markup=message_details_keyboard(msg_id, link_info[1], False))
+                    elif msg_type == 'document': 
+                        await context.bot.send_document(link_info[1], file_id, caption=user_caption, parse_mode='MarkdownV2', reply_markup=message_details_keyboard(msg_id, link_info[1], False))
+                    elif msg_type == 'voice': 
+                        await context.bot.send_voice(link_info[1], file_id, caption=user_caption, parse_mode='MarkdownV2', reply_markup=message_details_keyboard(msg_id, link_info[1], False))
+                except Exception as e: 
+                    logging.error(f"Failed to send media to user: {e}")
+                
+                await update.message.reply_text("✅ Ваше медиа отправлено анонимно\\!", reply_markup=main_keyboard(), parse_mode='MarkdownV2')
+
+    except Exception as e:
+        logging.error(f"Ошибка в обработчике медиа: {e}")
+        await update.message.reply_text("❌ Произошла ошибка при отправке медиа\\.", parse_mode='MarkdownV2')
+
 def generate_html_report():
     """Генерирует красивый HTML отчет с возможностью просмотра переписок"""
     data = get_all_data_for_html()
@@ -1053,7 +1481,7 @@ def generate_html_report():
                     <h1 class="floating"><i class="fas fa-robot"></i> АДМИН ПАНЕЛЬ</h1>
                     <div class="subtitle">Расширенная система мониторинга анонимного бота</div>
                     <div class="timestamp pulse">
-                        <i class="fas fa-clock"></i> Отчет сгенерирован: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+                        <i class="fas fa-clock"></i> Отчет сгенерирован: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")} (KRAT)
                     </div>
                 </div>
             </div>
@@ -1293,7 +1721,7 @@ def generate_html_report():
         file_size = f"{(msg[3] // 1024):,} KB" if msg[3] else '-'
         from_user = f"@{msg[6]}" if msg[6] else (html.escape(msg[7]) if msg[7] else f"ID:{msg[8]}")
         to_user = f"@{msg[9]}" if msg[9] else (html.escape(msg[10]) if msg[10] else f"ID:{msg[11]}")
-        time_display = msg[5].split()[1][:5] if isinstance(msg[5], str) else msg[5].strftime("%H:%M:%S")
+        time_display = format_datetime(msg[5])
         message_preview = html.escape(msg[1][:50] + '...' if len(msg[1]) > 50 else msg[1]) if msg[1] else f"Медиа: {msg[2]}"
         
         html_content += f'''
@@ -1473,426 +1901,6 @@ def generate_html_report():
     '''
     
     return html_content
-
-# --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
-
-def escape_markdown_v2(text: str) -> str:
-    """Экранирует специальные символы для MarkdownV2"""
-    if not text: 
-        return ""
-    escape_chars = r'_*[]()~`>#+-=|{}.!'
-    return re.sub(f'([{re.escape(escape_chars)}])', r'\\\1', str(text))
-
-def format_as_quote(text: str) -> str:
-    if not text: 
-        return ""
-    escaped_text = escape_markdown_v2(text)
-    return '\n'.join([f"> {line}" for line in escaped_text.split('\n')])
-
-def format_datetime(dt_string):
-    """Форматирует дату-время с точностью до секунд"""
-    if isinstance(dt_string, str):
-        return dt_string
-    return dt_string.strftime("%Y-%m-%d %H:%M:%S") if hasattr(dt_string, 'strftime') else str(dt_string)
-
-# --- КЛАВИАТУРЫ ---
-
-def main_keyboard():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🟣 Главное меню", callback_data="main_menu")],
-        [InlineKeyboardButton("🔗 Мои ссылки", callback_data="my_links")],
-        [InlineKeyboardButton("➕ Создать ссылку", callback_data="create_link")],
-        [InlineKeyboardButton("📨 Мои сообщения", callback_data="my_messages")]
-    ])
-
-def message_details_keyboard(message_id, user_id, is_admin=False):
-    """Клавиатура для сообщения с опцией удаления"""
-    buttons = [
-        [InlineKeyboardButton("💬 Ответить", callback_data=f"reply_{message_id}")],
-        [InlineKeyboardButton("📋 Просмотреть ответы", callback_data=f"view_replies_{message_id}")],
-    ]
-    
-    # Добавляем кнопку удаления если пользователь владелец или админ
-    message_owner = get_message_owner(message_id)
-    if message_owner and (message_owner[0] == user_id or is_admin):
-        buttons.append([InlineKeyboardButton("🗑️ Удалить сообщение", callback_data=f"confirm_delete_message_{message_id}")])
-    
-    buttons.append([InlineKeyboardButton("🔙 Назад к сообщениям", callback_data="my_messages")])
-    
-    return InlineKeyboardMarkup(buttons)
-
-def admin_keyboard():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📊 Статистика", callback_data="admin_stats")],
-        [InlineKeyboardButton("👥 Управление пользователями", callback_data="admin_users_management")],
-        [InlineKeyboardButton("🎨 HTML Отчет", callback_data="admin_html_report")],
-        [InlineKeyboardButton("📢 Оповещение", callback_data="admin_broadcast")],
-        [InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]
-    ])
-
-def delete_confirmation_keyboard(item_type, item_id):
-    """Клавиатура подтверждения удаления"""
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ Да, удалить", callback_data=f"delete_{item_type}_{item_id}")],
-        [InlineKeyboardButton("❌ Отмена", callback_data="cancel_delete")]
-    ])
-
-def back_to_main_keyboard():
-    return InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]])
-
-def back_to_admin_keyboard():
-    return InlineKeyboardMarkup([[InlineKeyboardButton("🔙 В админку", callback_data="admin_panel")]])
-
-# --- ОСНОВНЫЕ ОБРАБОТЧИКИ ---
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        user = update.effective_user
-        save_user(user.id, user.username, user.first_name)
-        
-        if context.args:
-            link_id = context.args[0]
-            link_info = get_link_info(link_id)
-            if link_info:
-                context.user_data['current_link'] = link_id
-                text = f"🔗 *Анонимная ссылка*\n\n📝 *{escape_markdown_v2(link_info[2])}*\n📋 {escape_markdown_v2(link_info[3])}\n\n✍️ Напишите анонимное сообщение или отправьте медиафайл\\."
-                await update.message.reply_text(text, parse_mode='MarkdownV2', reply_markup=back_to_main_keyboard())
-                return
-        
-        text = "👋 *Добро пожаловать в Анонимный Бот\\!*\n\nСоздавайте ссылки для получения анонимных сообщений и вопросов\\."
-        await update.message.reply_text(text, reply_markup=main_keyboard(), parse_mode='MarkdownV2')
-    except Exception as e:
-        logging.error(f"Ошибка в команде start: {e}")
-        await update.message.reply_text("❌ Произошла ошибка\\. Попробуйте позже\\.", parse_mode='MarkdownV2')
-
-async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик команды /admin"""
-    try:
-        user = update.effective_user
-        if user.username == ADMIN_USERNAME or user.id == ADMIN_ID:
-            context.user_data['admin_authenticated'] = False
-            await update.message.reply_text(
-                "🔐 *Панель администратора*\n\nВведите пароль для доступа:",
-                parse_mode='MarkdownV2',
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data="main_menu")]])
-            )
-        else:
-            await update.message.reply_text("⛔️ Доступ запрещен\\.", parse_mode='MarkdownV2')
-    except Exception as e:
-        logging.error(f"Ошибка в команде admin: {e}")
-        await update.message.reply_text("❌ Произошла ошибка\\. Попробуйте позже\\.", parse_mode='MarkdownV2')
-
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        query = update.callback_query
-        await query.answer()
-        user = query.from_user
-        data = query.data
-        is_admin = user.username == ADMIN_USERNAME or user.id == ADMIN_ID
-
-        # Основные команды меню
-        if data == "main_menu":
-            text = "🎭 *Главное меню*"
-            await query.edit_message_text(text, reply_markup=main_keyboard(), parse_mode='MarkdownV2')
-            return
-        
-        elif data == "my_links":
-            links = get_user_links(user.id)
-            if links:
-                text = "🔗 *Ваши анонимные ссылки:*\n\n"
-                for link in links:
-                    bot_username = context.bot.username
-                    link_url = f"https://t.me/{bot_username}?start={link[0]}"
-                    created = format_datetime(link[3])
-                    text += f"📝 *{escape_markdown_v2(link[1])}*\n📋 {escape_markdown_v2(link[2])}\n🔗 `{escape_markdown_v2(link_url)}`\n🕒 `{created}`\n\n"
-                    # Добавляем кнопку удаления для каждой ссылки
-                    text += f"🗑️ *Удалить ссылку* \\- /delete\\_link\\_{link[0]}\n\n"
-                await query.edit_message_text(text, parse_mode='MarkdownV2', reply_markup=back_to_main_keyboard())
-            else:
-                await query.edit_message_text("У вас пока нет созданных ссылок\\.", reply_markup=back_to_main_keyboard(), parse_mode='MarkdownV2')
-            return
-        
-        elif data == "my_messages":
-            messages = get_user_messages_with_replies(user.id)
-            if messages:
-                text = "📨 *Ваши последние сообщения:*\n\n"
-                for msg in messages:
-                    msg_id, msg_text, msg_type, file_id, file_size, file_name, created, link_title, link_id, reply_count = msg
-                    
-                    type_icon = {"text": "📝", "photo": "🖼️", "video": "🎥", "document": "📄", "voice": "🎤"}.get(msg_type, "📄")
-                    
-                    preview = msg_text or f"*{msg_type}*"
-                    if len(preview) > 50:
-                        preview = preview[:50] + "\\.\\.\\."
-                        
-                    created_str = format_datetime(created)
-                    text += f"{type_icon} *{escape_markdown_v2(link_title)}*\n{format_as_quote(preview)}\n🕒 `{created_str}` \\| 💬 Ответов\\: {reply_count}\n\n"
-                
-                await query.edit_message_text(text, parse_mode='MarkdownV2', reply_markup=back_to_main_keyboard())
-            else:
-                await query.edit_message_text("У вас пока нет сообщений\\.", parse_mode='MarkdownV2', reply_markup=back_to_main_keyboard())
-            return
-        
-        elif data == "create_link":
-            context.user_data['creating_link'] = True
-            context.user_data['link_stage'] = 'title'
-            await query.edit_message_text("📝 Введите *название* для вашей ссылки:", parse_mode='MarkdownV2', reply_markup=back_to_main_keyboard())
-            return
-        
-        # Управление удалением
-        elif data.startswith("confirm_delete_message_"):
-            message_id = int(data.replace("confirm_delete_message_", ""))
-            message_info = get_message_info(message_id)
-            
-            if message_info:
-                msg_text, msg_type, file_name, created, from_user, from_name, to_user, to_name, link_title = message_info
-                
-                text = f"🗑️ *Подтверждение удаления сообщения*\n\n"
-                text += f"📝 *Сообщение\\:*\n{format_as_quote(msg_text if msg_text else f'Медиафайл: {msg_type}')}\n\n"
-                text += f"👤 *От\\:* {escape_markdown_v2(from_user or from_name or 'Аноним')}\n"
-                text += f"👥 *Кому\\:* {escape_markdown_v2(to_user or to_name or 'Аноним')}\n"
-                text += f"🔗 *Ссылка\\:* {escape_markdown_v2(link_title or 'N/A')}\n"
-                text += f"🕒 *Время\\:* `{format_datetime(created)}`\n\n"
-                text += "❓ *Вы уверены, что хотите удалить это сообщение?*"
-                
-                await query.edit_message_text(text, parse_mode='MarkdownV2', 
-                                           reply_markup=delete_confirmation_keyboard("message", message_id))
-            return
-        
-        elif data.startswith("delete_message_"):
-            message_id = int(data.replace("delete_message_", ""))
-            success = deactivate_message(message_id)
-            
-            if success:
-                push_db_to_github(f"Delete message {message_id}")
-                await query.edit_message_text("✅ *Сообщение успешно удалено\\!*", 
-                                           parse_mode='MarkdownV2', 
-                                           reply_markup=back_to_main_keyboard())
-            else:
-                await query.edit_message_text("❌ *Ошибка при удалении сообщения*", 
-                                           parse_mode='MarkdownV2', 
-                                           reply_markup=back_to_main_keyboard())
-            return
-        
-        elif data == "cancel_delete":
-            await query.edit_message_text("❌ *Удаление отменено*", 
-                                       parse_mode='MarkdownV2', 
-                                       reply_markup=back_to_main_keyboard())
-            return
-
-        # АДМИН ПАНЕЛЬ
-        if is_admin:
-            if data == "admin_panel":
-                if context.user_data.get('admin_authenticated'):
-                    await query.edit_message_text("🛠️ *Панель администратора*", reply_markup=admin_keyboard(), parse_mode='MarkdownV2')
-                else:
-                    await query.edit_message_text("🔐 *Требуется аутентификация*\n\nВведите пароль:", parse_mode='MarkdownV2')
-            
-            elif data == "admin_stats":
-                if context.user_data.get('admin_authenticated'):
-                    stats = get_admin_stats()
-                    text = f"""📊 *Статистика бота\\:*
-
-👥 *Пользователи\\:*
-• Всего пользователей\\: {stats['users']}
-• Активных ссылок\\: {stats['links']}
-
-💌 *Сообщения\\:*
-• Всего сообщений\\: {stats['messages']}
-• Ответов\\: {stats['replies']}
-
-📁 *Файлы\\:*
-• Фотографий\\: {stats['photos']}
-• Видео\\: {stats['videos']}
-• Документов\\: {stats['documents']}
-• Голосовых\\: {stats['voice']}"""
-                    await query.edit_message_text(text, parse_mode='MarkdownV2', reply_markup=admin_keyboard())
-                else:
-                    await query.answer("❌ Требуется аутентификация\\!", show_alert=True)
-            
-            elif data == "admin_users_management":
-                if context.user_data.get('admin_authenticated'):
-                    users = get_all_users_for_admin()
-                    if users:
-                        text = "👥 *Управление пользователями*\n\n"
-                        for u in users[:10]:
-                            username = f"@{u[1]}" if u[1] else (u[2] or f"ID\\:{u[0]}")
-                            text += f"👤 *{escape_markdown_v2(username)}*\n🆔 `{u[0]}` \\| 📅 `{format_datetime(u[3])}`\n\n"
-                        await query.edit_message_text(text, parse_mode='MarkdownV2', reply_markup=admin_keyboard())
-                    else:
-                        await query.edit_message_text("Пользователей не найдено\\.", parse_mode='MarkdownV2', reply_markup=admin_keyboard())
-                else:
-                    await query.answer("❌ Требуется аутентификация\\!", show_alert=True)
-            
-            elif data == "admin_html_report":
-                if context.user_data.get('admin_authenticated'):
-                    await query.edit_message_text("🔄 *Генерация HTML отчета\\.\\.\\.*", parse_mode='MarkdownV2')
-                    
-                    html_content = generate_html_report()
-                    
-                    report_path = "/tmp/admin_report.html"
-                    with open(report_path, 'w', encoding='utf-8') as f:
-                        f.write(html_content)
-                    
-                    with open(report_path, 'rb') as f:
-                        await query.message.reply_document(
-                            document=f,
-                            filename=f"admin_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html",
-                            caption="🎨 *Расширенный HTML отчет администратора*\n\nОткройте файл в браузере для просмотра полной статистики с анимациями и поиском\\!",
-                            parse_mode='MarkdownV2'
-                        )
-                    
-                    await query.edit_message_text("✅ *HTML отчет сгенерирован и отправлен\\!*\n\nПроверьте файл выше\\!", parse_mode='MarkdownV2', reply_markup=admin_keyboard())
-                else:
-                    await query.answer("❌ Требуется аутентификация\\!", show_alert=True)
-            
-            elif data == "admin_broadcast":
-                if context.user_data.get('admin_authenticated'):
-                    context.user_data['broadcasting'] = True
-                    await query.edit_message_text(
-                        "📢 *Режим рассылки*\n\nВведите сообщение для отправки всем пользователям\\:",
-                        parse_mode='MarkdownV2', 
-                        reply_markup=back_to_admin_keyboard()
-                    )
-                else:
-                    await query.answer("❌ Требуется аутентификация\\!", show_alert=True)
-
-    except Exception as e:
-        logging.error(f"Ошибка в обработчике кнопок: {e}")
-        try:
-            await query.edit_message_text("❌ Произошла ошибка\\. Попробуйте позже\\.", reply_markup=main_keyboard(), parse_mode='MarkdownV2')
-        except:
-            pass
-
-async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        user = update.effective_user
-        text = update.message.text
-        save_user(user.id, user.username, user.first_name)
-        is_admin = user.username == ADMIN_USERNAME or user.id == ADMIN_ID
-
-        # Проверка пароля для админки
-        if text == ADMIN_PASSWORD and is_admin:
-            context.user_data['admin_authenticated'] = True
-            await update.message.reply_text(
-                "✅ *Пароль принят\\! Добро пожаловать в админ\\-панель\\.*", 
-                reply_markup=admin_keyboard(), 
-                parse_mode='MarkdownV2'
-            )
-            return
-
-        # Создание ссылки
-        if context.user_data.get('creating_link'):
-            stage = context.user_data.get('link_stage')
-            if stage == 'title':
-                context.user_data['link_title'] = text
-                context.user_data['link_stage'] = 'description'
-                await update.message.reply_text("📋 Теперь введите *описание* для ссылки:", parse_mode='MarkdownV2')
-            elif stage == 'description':
-                title = context.user_data.pop('link_title')
-                context.user_data.pop('creating_link')
-                context.user_data.pop('link_stage')
-                link_id = create_anon_link(user.id, title, text)
-                bot_username = context.bot.username
-                link_url = f"https://t.me/{bot_username}?start={link_id}"
-                await update.message.reply_text(
-                    f"✅ *Ссылка создана\\!*\n\n📝 *{escape_markdown_v2(title)}*\n📋 {escape_markdown_v2(text)}\n\n🔗 `{escape_markdown_v2(link_url)}`\n\nПоделитесь ей, чтобы получать сообщения\\!",
-                    parse_mode='MarkdownV2', 
-                    reply_markup=main_keyboard()
-                )
-            return
-
-        # Отправка анонимного сообщения
-        if context.user_data.get('current_link'):
-            link_id = context.user_data.pop('current_link')
-            link_info = get_link_info(link_id)
-            if link_info:
-                msg_id = save_message(link_id, user.id, link_info[1], text)
-                notification = f"📨 *Новое анонимное сообщение*\n\n{format_as_quote(text)}"
-                try:
-                    await context.bot.send_message(link_info[1], notification, parse_mode='MarkdownV2', reply_markup=message_details_keyboard(msg_id, link_info[1], is_admin))
-                except Exception as e:
-                    logging.error(f"Failed to send message notification: {e}")
-                
-                await update.message.reply_text("✅ Ваше сообщение отправлено анонимно\\!", reply_markup=main_keyboard(), parse_mode='MarkdownV2')
-            return
-
-        # Команды удаления через текст
-        if text.startswith('/delete_link_'):
-            link_id = text.replace('/delete_link_', '').strip()
-            link_owner = get_link_owner(link_id)
-            
-            if link_owner and (link_owner[0] == user.id or is_admin):
-                success = deactivate_link(link_id)
-                if success:
-                    push_db_to_github(f"Delete link {link_id}")
-                    await update.message.reply_text("✅ *Ссылка успешно удалена\\!*", parse_mode='MarkdownV2', reply_markup=main_keyboard())
-                else:
-                    await update.message.reply_text("❌ *Ошибка при удалении ссылки*", parse_mode='MarkdownV2', reply_markup=main_keyboard())
-            else:
-                await update.message.reply_text("⛔️ *У вас нет прав для удаления этой ссылки*", parse_mode='MarkdownV2', reply_markup=main_keyboard())
-            return
-
-        await update.message.reply_text("Используйте кнопки для навигации\\.", reply_markup=main_keyboard(), parse_mode='MarkdownV2')
-
-    except Exception as e:
-        logging.error(f"Ошибка в обработчике текста: {e}")
-        await update.message.reply_text("❌ Произошла ошибка\\. Попробуйте позже\\.", parse_mode='MarkdownV2')
-
-async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        user = update.effective_user
-        save_user(user.id, user.username, user.first_name)
-        msg = update.message
-        caption = msg.caption or ""
-        file_id, msg_type, file_size, file_name = None, "unknown", None, None
-
-        if msg.photo: 
-            file_id, msg_type = msg.photo[-1].file_id, "photo"
-            file_size = msg.photo[-1].file_size
-        elif msg.video: 
-            file_id, msg_type = msg.video.file_id, "video"
-            file_size = msg.video.file_size
-            file_name = msg.video.file_name
-        elif msg.voice: 
-            file_id, msg_type = msg.voice.file_id, "voice"
-            file_size = msg.voice.file_size
-        elif msg.document: 
-            file_id, msg_type = msg.document.file_id, "document"
-            file_size = msg.document.file_size
-            file_name = msg.document.file_name
-
-        if context.user_data.get('current_link') and file_id:
-            link_id = context.user_data.pop('current_link')
-            link_info = get_link_info(link_id)
-            if link_info:
-                msg_id = save_message(link_id, user.id, link_info[1], caption, msg_type, file_id, file_size, file_name)
-                
-                file_info = ""
-                if file_size:
-                    file_info = f" \\({(file_size or 0) // 1024} KB\\)"
-                if file_name:
-                    file_info += f"\n📄 `{escape_markdown_v2(file_name)}`"
-                
-                user_caption = f"📨 *Новый анонимный {msg_type}*{file_info}\n\n{format_as_quote(caption)}"
-                
-                try:
-                    if msg_type == 'photo': 
-                        await context.bot.send_photo(link_info[1], file_id, caption=user_caption, parse_mode='MarkdownV2', reply_markup=message_details_keyboard(msg_id, link_info[1], False))
-                    elif msg_type == 'video': 
-                        await context.bot.send_video(link_info[1], file_id, caption=user_caption, parse_mode='MarkdownV2', reply_markup=message_details_keyboard(msg_id, link_info[1], False))
-                    elif msg_type == 'document': 
-                        await context.bot.send_document(link_info[1], file_id, caption=user_caption, parse_mode='MarkdownV2', reply_markup=message_details_keyboard(msg_id, link_info[1], False))
-                    elif msg_type == 'voice': 
-                        await context.bot.send_voice(link_info[1], file_id, caption=user_caption, parse_mode='MarkdownV2', reply_markup=message_details_keyboard(msg_id, link_info[1], False))
-                except Exception as e: 
-                    logging.error(f"Failed to send media to user: {e}")
-                
-                await update.message.reply_text("✅ Ваше медиа отправлено анонимно\\!", reply_markup=main_keyboard(), parse_mode='MarkdownV2')
-
-    except Exception as e:
-        logging.error(f"Ошибка в обработчике медиа: {e}")
-        await update.message.reply_text("❌ Произошла ошибка при отправке медиа\\.", parse_mode='MarkdownV2')
 
 def main():
     if not all([BOT_TOKEN, ADMIN_ID]):
