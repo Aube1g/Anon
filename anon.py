@@ -98,42 +98,23 @@ def push_db_to_github(commit_message):
                 logging.error(f"Не удалось отправить БД на GitHub после {max_retries} попыток")
                 return False
 
-def backup_database():
-    """Создает резервную копию базы данных"""
-    try:
-        if os.path.exists(DB_PATH):
-            backup_path = f"{DB_PATH}.backup"
-            shutil.copy2(DB_PATH, backup_path)
-            logging.info(f"Резервная копия БД создана: {backup_path}")
-            return True
-    except Exception as e:
-        logging.error(f"Ошибка при создании резервной копии БД: {e}")
-    return False
-
-def restore_database():
-    """Восстанавливает базу данных из резервной копии"""
-    try:
-        backup_path = f"{DB_PATH}.backup"
-        if os.path.exists(backup_path):
-            shutil.copy2(backup_path, DB_PATH)
-            logging.info(f"БД восстановлена из резервной копии: {backup_path}")
-            return True
-    except Exception as e:
-        logging.error(f"Ошибка при восстановлении БД: {e}")
-    return False
-
 # --- ФУНКЦИИ ДЛЯ РАБОТЫ С БД ---
 
 def init_db():
     """Создает таблицы, если их нет."""
     try:
-        # Сначала пытаемся восстановить из резервной копии
-        if not os.path.exists(DB_PATH):
-            restore_database()
-        
-        db_existed_before = os.path.exists(DB_PATH)
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
+        
+        # Проверяем существование колонок
+        cursor.execute("PRAGMA table_info(links)")
+        link_columns = [column[1] for column in cursor.fetchall()]
+        
+        cursor.execute("PRAGMA table_info(messages)")
+        message_columns = [column[1] for column in cursor.fetchall()]
+        
+        cursor.execute("PRAGMA table_info(replies)")
+        reply_columns = [column[1] for column in cursor.fetchall()]
         
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS users (
@@ -186,15 +167,20 @@ def init_db():
             )
         ''')
         
+        # Добавляем отсутствующие колонки
+        if 'is_active' not in link_columns:
+            cursor.execute('ALTER TABLE links ADD COLUMN is_active BOOLEAN DEFAULT 1')
+        
+        if 'is_active' not in message_columns:
+            cursor.execute('ALTER TABLE messages ADD COLUMN is_active BOOLEAN DEFAULT 1')
+            
+        if 'is_active' not in reply_columns:
+            cursor.execute('ALTER TABLE replies ADD COLUMN is_active BOOLEAN DEFAULT 1')
+        
         conn.commit()
         conn.close()
         
-        if not db_existed_before:
-            logging.info("Файл БД не найден, создаю новый и отправляю на GitHub...")
-            push_db_to_github("Initial commit: create database file")
-        
-        # Создаем резервную копию после инициализации
-        backup_database()
+        logging.info("База данных успешно инициализирована")
         
     except Exception as e:
         logging.error(f"Ошибка при инициализации БД: {e}")
@@ -241,12 +227,12 @@ def save_reply(message_id, from_user_id, reply_text):
     push_db_to_github(f"Save reply to message {message_id}")
 
 def get_link_info(link_id):
-    return run_query('SELECT l.link_id, l.user_id, l.title, l.description, u.username FROM links l LEFT JOIN users u ON l.user_id = u.user_id WHERE l.link_id = ?', (link_id,), fetch="one")
+    return run_query('SELECT l.link_id, l.user_id, l.title, l.description, u.username FROM links l LEFT JOIN users u ON l.user_id = u.user_id WHERE l.link_id = ? AND l.is_active = 1', (link_id,), fetch="one")
 
 def get_user_links(user_id):
     return run_query('SELECT link_id, title, description, created_at FROM links WHERE user_id = ? AND is_active = 1', (user_id,), fetch="all")
 
-def get_user_messages_with_replies(user_id, limit=50):
+def get_user_messages_with_replies(user_id, limit=20):
     return run_query('''
         SELECT m.message_id, m.message_text, m.message_type, m.file_id, m.file_size, m.file_name, 
                m.created_at, l.title as link_title, l.link_id,
@@ -266,127 +252,6 @@ def get_message_replies(message_id):
         ORDER BY r.created_at ASC
     ''', (message_id,), fetch="all")
 
-def get_full_history_for_admin(user_id):
-    return run_query('''
-        SELECT m.message_id, m.message_text, m.message_type, m.file_id, m.file_size, m.file_name,
-               m.created_at, u_from.username as from_username, u_from.first_name as from_first_name,
-               u_to.username as to_username, u_to.first_name as to_first_name,
-               l.title as link_title, l.link_id
-        FROM messages m 
-        LEFT JOIN users u_from ON m.from_user_id = u_from.user_id 
-        LEFT JOIN users u_to ON m.to_user_id = u_to.user_id
-        LEFT JOIN links l ON m.link_id = l.link_id
-        WHERE (m.from_user_id = ? OR m.to_user_id = ?) AND m.is_active = 1
-        ORDER BY m.created_at ASC
-    ''', (user_id, user_id), fetch="all")
-
-def get_conversation_for_link(link_id):
-    """Получает полную переписку по ссылке"""
-    return run_query('''
-        SELECT 
-            'message' as type, 
-            m.message_id, 
-            m.message_text, 
-            m.message_type, 
-            m.file_id, 
-            m.file_size, 
-            m.file_name,
-            m.created_at,
-            u.username as from_username,
-            u.first_name as from_first_name,
-            m.from_user_id,
-            NULL as reply_text,
-            NULL as reply_username,
-            NULL as reply_first_name,
-            NULL as reply_id
-        FROM messages m
-        LEFT JOIN users u ON m.from_user_id = u.user_id
-        WHERE m.link_id = ? AND m.is_active = 1
-        
-        UNION ALL
-        
-        SELECT 
-            'reply' as type,
-            r.message_id,
-            NULL as message_text,
-            NULL as message_type,
-            NULL as file_id,
-            NULL as file_size,
-            NULL as file_name,
-            r.created_at,
-            NULL as from_username,
-            NULL as from_first_name,
-            r.from_user_id,
-            r.reply_text,
-            u.username as reply_username,
-            u.first_name as reply_first_name,
-            r.reply_id
-        FROM replies r
-        LEFT JOIN users u ON r.from_user_id = u.user_id
-        LEFT JOIN messages m ON r.message_id = m.message_id
-        WHERE m.link_id = ? AND r.is_active = 1
-        
-        ORDER BY created_at ASC
-    ''', (link_id, link_id), fetch="all")
-
-def get_conversation_for_user(user_id):
-    """Получает полную переписку пользователя"""
-    return run_query('''
-        SELECT 
-            'message' as type, 
-            m.message_id, 
-            m.message_text, 
-            m.message_type, 
-            m.file_id, 
-            m.file_size, 
-            m.file_name,
-            m.created_at,
-            u_from.username as from_username,
-            u_from.first_name as from_first_name,
-            m.from_user_id,
-            u_to.username as to_username,
-            u_to.first_name as to_first_name,
-            m.to_user_id,
-            l.title as link_title,
-            l.link_id,
-            NULL as reply_text,
-            NULL as reply_id
-        FROM messages m
-        LEFT JOIN users u_from ON m.from_user_id = u_from.user_id
-        LEFT JOIN users u_to ON m.to_user_id = u_to.user_id
-        LEFT JOIN links l ON m.link_id = l.link_id
-        WHERE (m.from_user_id = ? OR m.to_user_id = ?) AND m.is_active = 1
-        
-        UNION ALL
-        
-        SELECT 
-            'reply' as type,
-            r.message_id,
-            NULL as message_text,
-            NULL as message_type,
-            NULL as file_id,
-            NULL as file_size,
-            NULL as file_name,
-            r.created_at,
-            NULL as from_username,
-            NULL as from_first_name,
-            r.from_user_id,
-            NULL as to_username,
-            NULL as to_first_name,
-            NULL as to_user_id,
-            NULL as link_title,
-            NULL as link_id,
-            r.reply_text,
-            r.reply_id
-        FROM replies r
-        WHERE r.from_user_id = ? AND r.is_active = 1
-        
-        ORDER BY created_at ASC
-    ''', (user_id, user_id, user_id), fetch="all")
-
-def get_all_users_for_admin():
-    return run_query("SELECT user_id, username, first_name, created_at FROM users ORDER BY created_at DESC", fetch="all")
-
 def get_admin_stats():
     stats = {}
     try:
@@ -399,12 +264,44 @@ def get_admin_stats():
         stats['videos'] = run_query("SELECT COUNT(*) FROM messages WHERE message_type = 'video' AND is_active = 1", fetch="one")[0] or 0
         stats['documents'] = run_query("SELECT COUNT(*) FROM messages WHERE message_type = 'document' AND is_active = 1", fetch="one")[0] or 0
         stats['voice'] = run_query("SELECT COUNT(*) FROM messages WHERE message_type = 'voice' AND is_active = 1", fetch="one")[0] or 0
+        
+        # Дополнительная статистика
+        stats['active_today'] = run_query("SELECT COUNT(DISTINCT from_user_id) FROM messages WHERE DATE(created_at) = DATE('now') AND is_active = 1", fetch="one")[0] or 0
+        stats['new_today'] = run_query("SELECT COUNT(*) FROM users WHERE DATE(created_at) = DATE('now')", fetch="one")[0] or 0
+        
     except Exception as e:
         logging.error(f"Ошибка при получении статистики: {e}")
-        # Возвращаем значения по умолчанию
-        stats = {'users': 0, 'links': 0, 'messages': 0, 'replies': 0, 'photos': 0, 'videos': 0, 'documents': 0, 'voice': 0}
+        stats = {'users': 0, 'links': 0, 'messages': 0, 'replies': 0, 'photos': 0, 'videos': 0, 'documents': 0, 'voice': 0, 'active_today': 0, 'new_today': 0}
     
     return stats
+
+def get_all_users_for_admin():
+    return run_query("SELECT user_id, username, first_name, created_at FROM users ORDER BY created_at DESC", fetch="all")
+
+def get_all_links_for_admin():
+    return run_query('''
+        SELECT l.link_id, l.title, l.description, l.created_at, u.username, u.first_name,
+               (SELECT COUNT(*) FROM messages m WHERE m.link_id = l.link_id AND m.is_active = 1) as message_count
+        FROM links l
+        LEFT JOIN users u ON l.user_id = u.user_id
+        WHERE l.is_active = 1
+        ORDER BY l.created_at DESC
+    ''', fetch="all")
+
+def get_recent_messages_for_admin(limit=50):
+    return run_query('''
+        SELECT m.message_id, m.message_text, m.message_type, m.file_size, m.file_name, m.created_at,
+               u_from.username as from_username, u_from.first_name as from_first_name,
+               u_to.username as to_username, u_to.first_name as to_first_name,
+               l.title as link_title, l.link_id
+        FROM messages m
+        LEFT JOIN users u_from ON m.from_user_id = u_from.user_id
+        LEFT JOIN users u_to ON m.to_user_id = u_to.user_id
+        LEFT JOIN links l ON m.link_id = l.link_id
+        WHERE m.is_active = 1
+        ORDER BY m.created_at DESC
+        LIMIT ?
+    ''', (limit,), fetch="all")
 
 # --- ФУНКЦИИ УДАЛЕНИЯ ---
 
@@ -442,61 +339,6 @@ def get_message_owner(message_id):
     """Получает отправителя сообщения"""
     return run_query('SELECT from_user_id FROM messages WHERE message_id = ?', (message_id,), fetch="one")
 
-def get_all_data_for_html():
-    data = {}
-    try:
-        data['stats'] = get_admin_stats()
-        data['users'] = run_query('''
-            SELECT u.user_id, u.username, u.first_name, u.created_at,
-                   (SELECT COUNT(*) FROM links l WHERE l.user_id = u.user_id AND l.is_active = 1) as link_count,
-                   (SELECT COUNT(*) FROM messages m WHERE m.to_user_id = u.user_id AND m.is_active = 1) as received_messages,
-                   (SELECT COUNT(*) FROM messages m WHERE m.from_user_id = u.user_id AND m.is_active = 1) as sent_messages
-            FROM users u
-            ORDER BY u.created_at DESC
-        ''', fetch="all") or []
-        
-        data['links'] = run_query('''
-            SELECT l.link_id, l.title, l.description, l.created_at, l.expires_at,
-                   u.username, u.first_name, u.user_id,
-                   (SELECT COUNT(*) FROM messages m WHERE m.link_id = l.link_id AND m.is_active = 1) as message_count
-            FROM links l
-            LEFT JOIN users u ON l.user_id = u.user_id
-            WHERE l.is_active = 1
-            ORDER BY l.created_at DESC
-        ''', fetch="all") or []
-        
-        data['recent_messages'] = run_query('''
-            SELECT m.message_id, m.message_text, m.message_type, m.file_size, m.file_name, m.created_at,
-                   u_from.username as from_username, u_from.first_name as from_first_name, u_from.user_id as from_user_id,
-                   u_to.username as to_username, u_to.first_name as to_first_name, u_to.user_id as to_user_id,
-                   l.title as link_title, l.link_id
-            FROM messages m
-            LEFT JOIN users u_from ON m.from_user_id = u_from.user_id
-            LEFT JOIN users u_to ON m.to_user_id = u_to.user_id
-            LEFT JOIN links l ON m.link_id = l.link_id
-            WHERE m.is_active = 1
-            ORDER BY m.created_at DESC
-            LIMIT 200
-        ''', fetch="all") or []
-        
-        # Получаем все медиафайлы
-        data['media_files'] = run_query('''
-            SELECT m.message_id, m.message_type, m.file_id, m.file_size, m.file_name, m.created_at,
-                   u.username, u.first_name, l.title as link_title
-            FROM messages m
-            LEFT JOIN users u ON m.from_user_id = u.user_id
-            LEFT JOIN links l ON m.link_id = l.link_id
-            WHERE m.message_type != 'text' AND m.is_active = 1
-            ORDER BY m.created_at DESC
-            LIMIT 100
-        ''', fetch="all") or []
-        
-    except Exception as e:
-        logging.error(f"Ошибка при получении данных для HTML: {e}")
-        data = {'stats': get_admin_stats(), 'users': [], 'links': [], 'recent_messages': [], 'media_files': []}
-    
-    return data
-
 # --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
 
 def escape_markdown_v2(text: str) -> str:
@@ -505,12 +347,6 @@ def escape_markdown_v2(text: str) -> str:
         return ""
     escape_chars = r'_*[]()~`>#+-=|{}.!'
     return re.sub(f'([{re.escape(escape_chars)}])', r'\\\1', str(text))
-
-def format_as_quote(text: str) -> str:
-    if not text: 
-        return ""
-    escaped_text = escape_markdown_v2(text)
-    return '\n'.join([f"> {line}" for line in escaped_text.split('\n')])
 
 def format_datetime(dt_string):
     """Форматирует дату-время с точностью до секунд (Красноярское время UTC+7)"""
@@ -524,7 +360,7 @@ def format_datetime(dt_string):
     
     # Добавляем 7 часов для Красноярского времени
     krasnoyarsk_time = dt + timedelta(hours=7)
-    return krasnoyarsk_time.strftime("%Y-%m-%d %H:%M:%S") + " (KRAT)"
+    return krasnoyarsk_time.strftime("%Y-%m-%d %H:%M:%S") + " (Krasnoyarsk)"
 
 # --- КЛАВИАТУРЫ ---
 
@@ -536,43 +372,55 @@ def main_keyboard():
         [InlineKeyboardButton("📨 Мои сообщения", callback_data="my_messages")]
     ])
 
-def message_details_keyboard(message_id, user_id, is_admin=False):
-    """Клавиатура для сообщения с опцией удаления"""
-    buttons = [
-        [InlineKeyboardButton("💬 Ответить", callback_data=f"reply_{message_id}")],
-        [InlineKeyboardButton("📋 Просмотреть ответы", callback_data=f"view_replies_{message_id}")],
-    ]
+def compact_main_keyboard():
+    """Компактная версия клавиатуры"""
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🟣 Главная", callback_data="main_menu"),
+            InlineKeyboardButton("🔗 Ссылки", callback_data="my_links")
+        ],
+        [
+            InlineKeyboardButton("➕ Создать", callback_data="create_link"),
+            InlineKeyboardButton("📨 Сообщения", callback_data="my_messages")
+        ]
+    ])
+
+def message_actions_keyboard(message_id, user_id, is_admin=False):
+    """Компактная клавиатура действий для сообщения"""
+    buttons = []
     
-    # Добавляем кнопку удаления если пользователь владелец или админ
+    # Основные действия в одной строке
+    row = [
+        InlineKeyboardButton("💬 Ответить", callback_data=f"reply_{message_id}"),
+        InlineKeyboardButton("📋 Ответы", callback_data=f"view_replies_{message_id}")
+    ]
+    buttons.append(row)
+    
+    # Кнопка удаления если пользователь владелец или админ
     message_owner = get_message_owner(message_id)
     if message_owner and (message_owner[0] == user_id or is_admin):
-        buttons.append([InlineKeyboardButton("🗑️ Удалить сообщение", callback_data=f"confirm_delete_message_{message_id}")])
+        buttons.append([InlineKeyboardButton("🗑️ Удалить", callback_data=f"confirm_delete_message_{message_id}")])
     
-    buttons.append([InlineKeyboardButton("🔙 Назад к сообщениям", callback_data="my_messages")])
+    buttons.append([InlineKeyboardButton("🔙 Назад", callback_data="my_messages")])
     
     return InlineKeyboardMarkup(buttons)
 
 def admin_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📊 Статистика", callback_data="admin_stats")],
-        [InlineKeyboardButton("👥 Управление пользователями", callback_data="admin_users_management")],
-        [InlineKeyboardButton("🎨 HTML Отчет", callback_data="admin_html_report")],
-        [InlineKeyboardButton("📢 Оповещение", callback_data="admin_broadcast")],
-        [InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]
+        [InlineKeyboardButton("👥 Пользователи", callback_data="admin_users")],
+        [InlineKeyboardButton("🎨 ПИЗДАТЫЙ ОТЧЕТ", callback_data="admin_epic_report")],
+        [InlineKeyboardButton("🔙 Главная", callback_data="main_menu")]
     ])
 
 def delete_confirmation_keyboard(item_type, item_id):
     """Клавиатура подтверждения удаления"""
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ Да, удалить", callback_data=f"delete_{item_type}_{item_id}")],
-        [InlineKeyboardButton("❌ Отмена", callback_data="cancel_delete")]
+        [
+            InlineKeyboardButton("✅ Да", callback_data=f"delete_{item_type}_{item_id}"),
+            InlineKeyboardButton("❌ Нет", callback_data="cancel_delete")
+        ]
     ])
-
-def back_to_main_keyboard():
-    return InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]])
-
-def back_to_admin_keyboard():
-    return InlineKeyboardMarkup([[InlineKeyboardButton("🔙 В админку", callback_data="admin_panel")]])
 
 # --- ОСНОВНЫЕ ОБРАБОТЧИКИ ---
 
@@ -587,11 +435,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if link_info:
                 context.user_data['current_link'] = link_id
                 text = f"🔗 *Анонимная ссылка*\n\n📝 *{escape_markdown_v2(link_info[2])}*\n📋 {escape_markdown_v2(link_info[3])}\n\n✍️ Напишите анонимное сообщение или отправьте медиафайл\\."
-                await update.message.reply_text(text, parse_mode='MarkdownV2', reply_markup=back_to_main_keyboard())
+                await update.message.reply_text(text, parse_mode='MarkdownV2', reply_markup=compact_main_keyboard())
                 return
         
-        text = "👋 *Добро пожаловать в Анонимный Бот\\!*\n\nСоздавайте ссылки для получения анонимных сообщений и вопросов\\."
-        await update.message.reply_text(text, reply_markup=main_keyboard(), parse_mode='MarkdownV2')
+        text = "👋 *Добро пожаловать в Анонимный Бот\\!*\n\nСоздавайте ссылки для получения анонимных сообщений\\."
+        await update.message.reply_text(text, reply_markup=compact_main_keyboard(), parse_mode='MarkdownV2')
     except Exception as e:
         logging.error(f"Ошибка в команде start: {e}")
         await update.message.reply_text("❌ Произошла ошибка\\. Попробуйте позже\\.", parse_mode='MarkdownV2')
@@ -601,11 +449,11 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         user = update.effective_user
         if user.username == ADMIN_USERNAME or user.id == ADMIN_ID:
-            context.user_data['admin_authenticated'] = False
+            context.user_data['admin_authenticated'] = True
             await update.message.reply_text(
-                "🔐 *Панель администратора*\n\nВведите пароль для доступа:",
-                parse_mode='MarkdownV2',
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data="main_menu")]])
+                "🛠️ *Панель администратора*",
+                reply_markup=admin_keyboard(),
+                parse_mode='MarkdownV2'
             )
         else:
             await update.message.reply_text("⛔️ Доступ запрещен\\.", parse_mode='MarkdownV2')
@@ -624,7 +472,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Основные команды меню
         if data == "main_menu":
             text = "🎭 *Главное меню*"
-            await query.edit_message_text(text, reply_markup=main_keyboard(), parse_mode='MarkdownV2')
+            await query.edit_message_text(text, reply_markup=compact_main_keyboard(), parse_mode='MarkdownV2')
             return
         
         elif data == "my_links":
@@ -635,39 +483,38 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     bot_username = context.bot.username
                     link_url = f"https://t.me/{bot_username}?start={link[0]}"
                     created = format_datetime(link[3])
-                    text += f"📝 *{escape_markdown_v2(link[1])}*\n📋 {escape_markdown_v2(link[2])}\n🔗 `{escape_markdown_v2(link_url)}`\n🕒 `{created}`\n\n"
-                    # Добавляем кнопку удаления для каждой ссылки
-                    text += f"🗑️ *Удалить ссылку* \\- /delete\\_link\\_{link[0]}\n\n"
-                await query.edit_message_text(text, parse_mode='MarkdownV2', reply_markup=back_to_main_keyboard())
+                    text += f"📝 *{escape_markdown_v2(link[1])}*\n🔗 `{escape_markdown_v2(link_url)}`\n🕒 `{created}`\n"
+                    text += f"🗑️ Удалить: /delete\\_link\\_{link[0]}\n\n"
+                await query.edit_message_text(text, parse_mode='MarkdownV2', reply_markup=compact_main_keyboard())
             else:
-                await query.edit_message_text("У вас пока нет созданных ссылок\\.", reply_markup=back_to_main_keyboard(), parse_mode='MarkdownV2')
+                await query.edit_message_text("У вас пока нет созданных ссылок\\.", reply_markup=compact_main_keyboard(), parse_mode='MarkdownV2')
             return
         
         elif data == "my_messages":
-            messages = get_user_messages_with_replies(user.id)
+            messages = get_user_messages_with_replies(user.id, limit=10)
             if messages:
-                text = "📨 *Ваши последние сообщения:*\n\n"
+                text = "📨 *Ваши сообщения:*\n\n"
                 for msg in messages:
                     msg_id, msg_text, msg_type, file_id, file_size, file_name, created, link_title, link_id, reply_count = msg
                     
                     type_icon = {"text": "📝", "photo": "🖼️", "video": "🎥", "document": "📄", "voice": "🎤"}.get(msg_type, "📄")
                     
                     preview = msg_text or f"*{msg_type}*"
-                    if len(preview) > 50:
-                        preview = preview[:50] + "\\.\\.\\."
+                    if len(preview) > 30:
+                        preview = preview[:30] + "\\.\\.\\."
                         
                     created_str = format_datetime(created)
-                    text += f"{type_icon} *{escape_markdown_v2(link_title)}*\n{format_as_quote(preview)}\n🕒 `{created_str}` \\| 💬 Ответов\\: {reply_count}\n\n"
+                    text += f"{type_icon} *{escape_markdown_v2(link_title)}*\n`{preview}`\n🕒 `{created_str}` \\| 💬 {reply_count}\n\n"
                 
-                await query.edit_message_text(text, parse_mode='MarkdownV2', reply_markup=back_to_main_keyboard())
+                await query.edit_message_text(text, parse_mode='MarkdownV2', reply_markup=compact_main_keyboard())
             else:
-                await query.edit_message_text("У вас пока нет сообщений\\.", parse_mode='MarkdownV2', reply_markup=back_to_main_keyboard())
+                await query.edit_message_text("У вас пока нет сообщений\\.", parse_mode='MarkdownV2', reply_markup=compact_main_keyboard())
             return
         
         elif data == "create_link":
             context.user_data['creating_link'] = True
             context.user_data['link_stage'] = 'title'
-            await query.edit_message_text("📝 Введите *название* для вашей ссылки:", parse_mode='MarkdownV2', reply_markup=back_to_main_keyboard())
+            await query.edit_message_text("📝 Введите *название* для вашей ссылки:", parse_mode='MarkdownV2', reply_markup=compact_main_keyboard())
             return
         
         # Управление удалением
@@ -678,13 +525,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if message_info:
                 msg_text, msg_type, file_name, created, from_user, from_name, to_user, to_name, link_title = message_info
                 
-                text = f"🗑️ *Подтверждение удаления сообщения*\n\n"
-                text += f"📝 *Сообщение\\:*\n{format_as_quote(msg_text if msg_text else f'Медиафайл: {msg_type}')}\n\n"
-                text += f"👤 *От\\:* {escape_markdown_v2(from_user or from_name or 'Аноним')}\n"
-                text += f"👥 *Кому\\:* {escape_markdown_v2(to_user or to_name or 'Аноним')}\n"
-                text += f"🔗 *Ссылка\\:* {escape_markdown_v2(link_title or 'N/A')}\n"
-                text += f"🕒 *Время\\:* `{format_datetime(created)}`\n\n"
-                text += "❓ *Вы уверены, что хотите удалить это сообщение?*"
+                text = f"🗑️ *Подтверждение удаления*\n\n"
+                text += f"📝 *Сообщение:*\n`{msg_text if msg_text else f'Медиафайл: {msg_type}'}`\n\n"
+                text += f"❓ *Вы уверены, что хотите удалить это сообщение?*"
                 
                 await query.edit_message_text(text, parse_mode='MarkdownV2', 
                                            reply_markup=delete_confirmation_keyboard("message", message_id))
@@ -696,102 +539,70 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             if success:
                 push_db_to_github(f"Delete message {message_id}")
-                await query.edit_message_text("✅ *Сообщение успешно удалено\\!*", 
+                await query.edit_message_text("✅ *Сообщение удалено\\!*", 
                                            parse_mode='MarkdownV2', 
-                                           reply_markup=back_to_main_keyboard())
+                                           reply_markup=compact_main_keyboard())
             else:
-                await query.edit_message_text("❌ *Ошибка при удалении сообщения*", 
+                await query.edit_message_text("❌ *Ошибка при удалении*", 
                                            parse_mode='MarkdownV2', 
-                                           reply_markup=back_to_main_keyboard())
+                                           reply_markup=compact_main_keyboard())
             return
         
         elif data == "cancel_delete":
             await query.edit_message_text("❌ *Удаление отменено*", 
                                        parse_mode='MarkdownV2', 
-                                       reply_markup=back_to_main_keyboard())
+                                       reply_markup=compact_main_keyboard())
             return
 
         # АДМИН ПАНЕЛЬ
         if is_admin:
-            if data == "admin_panel":
-                if context.user_data.get('admin_authenticated'):
-                    await query.edit_message_text("🛠️ *Панель администратора*", reply_markup=admin_keyboard(), parse_mode='MarkdownV2')
-                else:
-                    await query.edit_message_text("🔐 *Требуется аутентификация*\n\nВведите пароль:", parse_mode='MarkdownV2')
-            
-            elif data == "admin_stats":
-                if context.user_data.get('admin_authenticated'):
-                    stats = get_admin_stats()
-                    text = f"""📊 *Статистика бота\\:*
+            if data == "admin_stats":
+                stats = get_admin_stats()
+                text = f"""📊 *Статистика бота:*
 
-👥 *Пользователи\\:*
-• Всего пользователей\\: {stats['users']}
-• Активных ссылок\\: {stats['links']}
+👥 *Пользователи:*
+• Всего: {stats['users']}
+• Активных ссылок: {stats['links']}
 
-💌 *Сообщения\\:*
-• Всего сообщений\\: {stats['messages']}
-• Ответов\\: {stats['replies']}
+💌 *Сообщения:*
+• Всего: {stats['messages']}
+• Ответов: {stats['replies']}
 
-📁 *Файлы\\:*
-• Фотографий\\: {stats['photos']}
-• Видео\\: {stats['videos']}
-• Документов\\: {stats['documents']}
-• Голосовых\\: {stats['voice']}"""
-                    await query.edit_message_text(text, parse_mode='MarkdownV2', reply_markup=admin_keyboard())
-                else:
-                    await query.answer("❌ Требуется аутентификация\\!", show_alert=True)
+📁 *Файлы:*
+• Фото: {stats['photos']}
+• Видео: {stats['videos']}
+• Документы: {stats['documents']}
+• Голосовые: {stats['voice']}"""
+                await query.edit_message_text(text, parse_mode='MarkdownV2', reply_markup=admin_keyboard())
             
-            elif data == "admin_users_management":
-                if context.user_data.get('admin_authenticated'):
-                    users = get_all_users_for_admin()
-                    if users:
-                        text = "👥 *Управление пользователями*\n\n"
-                        for u in users[:10]:
-                            username = f"@{u[1]}" if u[1] else (u[2] or f"ID\\:{u[0]}")
-                            text += f"👤 *{escape_markdown_v2(username)}*\n🆔 `{u[0]}` \\| 📅 `{format_datetime(u[3])}`\n\n"
-                        await query.edit_message_text(text, parse_mode='MarkdownV2', reply_markup=admin_keyboard())
-                    else:
-                        await query.edit_message_text("Пользователей не найдено\\.", parse_mode='MarkdownV2', reply_markup=admin_keyboard())
-                else:
-                    await query.answer("❌ Требуется аутентификация\\!", show_alert=True)
+            elif data == "admin_users":
+                users_count = get_admin_stats()['users']
+                await query.edit_message_text(f"👥 *Пользователи:* {users_count}", parse_mode='MarkdownV2', reply_markup=admin_keyboard())
             
-            elif data == "admin_html_report":
-                if context.user_data.get('admin_authenticated'):
-                    await query.edit_message_text("🔄 *Генерация HTML отчета\\.\\.\\.*", parse_mode='MarkdownV2')
-                    
-                    html_content = generate_html_report()
-                    
-                    report_path = "/tmp/admin_report.html"
-                    with open(report_path, 'w', encoding='utf-8') as f:
-                        f.write(html_content)
-                    
-                    with open(report_path, 'rb') as f:
-                        await query.message.reply_document(
-                            document=f,
-                            filename=f"admin_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html",
-                            caption="🎨 *Расширенный HTML отчет администратора*\n\nОткройте файл в браузере для просмотра полной статистики с анимациями и поиском\\!",
-                            parse_mode='MarkdownV2'
-                        )
-                    
-                    await query.edit_message_text("✅ *HTML отчет сгенерирован и отправлен\\!*\n\nПроверьте файл выше\\!", parse_mode='MarkdownV2', reply_markup=admin_keyboard())
-                else:
-                    await query.answer("❌ Требуется аутентификация\\!", show_alert=True)
-            
-            elif data == "admin_broadcast":
-                if context.user_data.get('admin_authenticated'):
-                    context.user_data['broadcasting'] = True
-                    await query.edit_message_text(
-                        "📢 *Режим рассылки*\n\nВведите сообщение для отправки всем пользователям\\:",
-                        parse_mode='MarkdownV2', 
-                        reply_markup=back_to_admin_keyboard()
+            elif data == "admin_epic_report":
+                await query.edit_message_text("🎨 *Генерирую пиздатый отчет...*", parse_mode='MarkdownV2')
+                
+                # Генерируем эпичный отчет
+                html_content = generate_epic_html_report()
+                
+                report_path = "/tmp/epic_report.html"
+                with open(report_path, 'w', encoding='utf-8') as f:
+                    f.write(html_content)
+                
+                with open(report_path, 'rb') as f:
+                    await query.message.reply_document(
+                        document=f,
+                        filename=f"EPIC_REPORT_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html",
+                        caption="💜 *ПИЗДАТЫЙ ОТЧЕТ АДМИНА* 💜\n\nОткрой в браузере для полного эффекта!",
+                        parse_mode='MarkdownV2'
                     )
-                else:
-                    await query.answer("❌ Требуется аутентификация\\!", show_alert=True)
+                
+                await query.edit_message_text("💜 *ЭПИЧНЫЙ ОТЧЕТ ОТПРАВЛЕН!*", parse_mode='MarkdownV2', reply_markup=admin_keyboard())
 
     except Exception as e:
         logging.error(f"Ошибка в обработчике кнопок: {e}")
         try:
-            await query.edit_message_text("❌ Произошла ошибка\\. Попробуйте позже\\.", reply_markup=main_keyboard(), parse_mode='MarkdownV2')
+            await query.edit_message_text("❌ Произошла ошибка\\. Попробуйте позже\\.", reply_markup=compact_main_keyboard(), parse_mode='MarkdownV2')
         except:
             pass
 
@@ -800,17 +611,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user = update.effective_user
         text = update.message.text
         save_user(user.id, user.username, user.first_name)
-        is_admin = user.username == ADMIN_USERNAME or user.id == ADMIN_ID
-
-        # Проверка пароля для админки
-        if text == ADMIN_PASSWORD and is_admin:
-            context.user_data['admin_authenticated'] = True
-            await update.message.reply_text(
-                "✅ *Пароль принят\\! Добро пожаловать в админ\\-панель\\.*", 
-                reply_markup=admin_keyboard(), 
-                parse_mode='MarkdownV2'
-            )
-            return
 
         # Создание ссылки
         if context.user_data.get('creating_link'):
@@ -827,9 +627,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 bot_username = context.bot.username
                 link_url = f"https://t.me/{bot_username}?start={link_id}"
                 await update.message.reply_text(
-                    f"✅ *Ссылка создана\\!*\n\n📝 *{escape_markdown_v2(title)}*\n📋 {escape_markdown_v2(text)}\n\n🔗 `{escape_markdown_v2(link_url)}`\n\nПоделитесь ей, чтобы получать сообщения\\!",
+                    f"✅ *Ссылка создана\\!*\n\n📝 *{escape_markdown_v2(title)}*\n🔗 `{escape_markdown_v2(link_url)}`\n\nПоделитесь ей, чтобы получать сообщения\\!",
                     parse_mode='MarkdownV2', 
-                    reply_markup=main_keyboard()
+                    reply_markup=compact_main_keyboard()
                 )
             return
 
@@ -838,14 +638,22 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             link_id = context.user_data.pop('current_link')
             link_info = get_link_info(link_id)
             if link_info:
+                # Сохраняем сообщение с поддержкой форматирования
                 msg_id = save_message(link_id, user.id, link_info[1], text)
+                
+                # Отправляем уведомление владельцу с сохранением форматирования
                 notification = f"📨 *Новое анонимное сообщение*\n\n{text}"
                 try:
-                    await context.bot.send_message(link_info[1], notification, parse_mode='MarkdownV2', reply_markup=message_details_keyboard(msg_id, link_info[1], is_admin))
+                    await context.bot.send_message(
+                        link_info[1], 
+                        notification, 
+                        parse_mode='MarkdownV2', 
+                        reply_markup=message_actions_keyboard(msg_id, link_info[1], False)
+                    )
                 except Exception as e:
                     logging.error(f"Failed to send message notification: {e}")
                 
-                await update.message.reply_text("✅ Ваше сообщение отправлено анонимно\\!", reply_markup=main_keyboard(), parse_mode='MarkdownV2')
+                await update.message.reply_text("✅ Ваше сообщение отправлено анонимно\\!", reply_markup=compact_main_keyboard(), parse_mode='MarkdownV2')
             return
 
         # Команды удаления через текст
@@ -853,18 +661,18 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             link_id = text.replace('/delete_link_', '').strip()
             link_owner = get_link_owner(link_id)
             
-            if link_owner and (link_owner[0] == user.id or is_admin):
+            if link_owner and link_owner[0] == user.id:
                 success = deactivate_link(link_id)
                 if success:
                     push_db_to_github(f"Delete link {link_id}")
-                    await update.message.reply_text("✅ *Ссылка успешно удалена\\!*", parse_mode='MarkdownV2', reply_markup=main_keyboard())
+                    await update.message.reply_text("✅ *Ссылка удалена\\!*", parse_mode='MarkdownV2', reply_markup=compact_main_keyboard())
                 else:
-                    await update.message.reply_text("❌ *Ошибка при удалении ссылки*", parse_mode='MarkdownV2', reply_markup=main_keyboard())
+                    await update.message.reply_text("❌ *Ошибка при удалении*", parse_mode='MarkdownV2', reply_markup=compact_main_keyboard())
             else:
-                await update.message.reply_text("⛔️ *У вас нет прав для удаления этой ссылки*", parse_mode='MarkdownV2', reply_markup=main_keyboard())
+                await update.message.reply_text("⛔️ *Нет прав для удаления*", parse_mode='MarkdownV2', reply_markup=compact_main_keyboard())
             return
 
-        await update.message.reply_text("Используйте кнопки для навигации\\.", reply_markup=main_keyboard(), parse_mode='MarkdownV2')
+        await update.message.reply_text("Используйте кнопки для навигации\\.", reply_markup=compact_main_keyboard(), parse_mode='MarkdownV2')
 
     except Exception as e:
         logging.error(f"Ошибка в обработчике текста: {e}")
@@ -909,799 +717,648 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 
                 try:
                     if msg_type == 'photo': 
-                        await context.bot.send_photo(link_info[1], file_id, caption=user_caption, parse_mode='MarkdownV2', reply_markup=message_details_keyboard(msg_id, link_info[1], False))
+                        await context.bot.send_photo(link_info[1], file_id, caption=user_caption, parse_mode='MarkdownV2', reply_markup=message_actions_keyboard(msg_id, link_info[1], False))
                     elif msg_type == 'video': 
-                        await context.bot.send_video(link_info[1], file_id, caption=user_caption, parse_mode='MarkdownV2', reply_markup=message_details_keyboard(msg_id, link_info[1], False))
+                        await context.bot.send_video(link_info[1], file_id, caption=user_caption, parse_mode='MarkdownV2', reply_markup=message_actions_keyboard(msg_id, link_info[1], False))
                     elif msg_type == 'document': 
-                        await context.bot.send_document(link_info[1], file_id, caption=user_caption, parse_mode='MarkdownV2', reply_markup=message_details_keyboard(msg_id, link_info[1], False))
+                        await context.bot.send_document(link_info[1], file_id, caption=user_caption, parse_mode='MarkdownV2', reply_markup=message_actions_keyboard(msg_id, link_info[1], False))
                     elif msg_type == 'voice': 
-                        await context.bot.send_voice(link_info[1], file_id, caption=user_caption, parse_mode='MarkdownV2', reply_markup=message_details_keyboard(msg_id, link_info[1], False))
+                        await context.bot.send_voice(link_info[1], file_id, caption=user_caption, parse_mode='MarkdownV2', reply_markup=message_actions_keyboard(msg_id, link_info[1], False))
                 except Exception as e: 
                     logging.error(f"Failed to send media to user: {e}")
                 
-                await update.message.reply_text("✅ Ваше медиа отправлено анонимно\\!", reply_markup=main_keyboard(), parse_mode='MarkdownV2')
+                await update.message.reply_text("✅ Ваше медиа отправлено анонимно\\!", reply_markup=compact_main_keyboard(), parse_mode='MarkdownV2')
 
     except Exception as e:
         logging.error(f"Ошибка в обработчике медиа: {e}")
         await update.message.reply_text("❌ Произошла ошибка при отправке медиа\\.", parse_mode='MarkdownV2')
 
-def generate_html_report():
-    """Генерирует красивый HTML отчет с возможностью просмотра переписок"""
-    data = get_all_data_for_html()
+def generate_epic_html_report():
+    """Генерирует пиздатый красивый отчет"""
+    stats = get_admin_stats()
+    users = get_all_users_for_admin()[:15]  # Топ 15 пользователей
+    links = get_all_links_for_admin()[:20]  # Топ 20 ссылок
+    messages = get_recent_messages_for_admin(30)  # 30 последних сообщений
     
     html_content = f'''
-    <!DOCTYPE html>
-    <html lang="ru">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>🟣 Анонимный Бот - Расширенная Панель Администратора</title>
-        <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;700;900&family=Exo+2:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-        <style>
-            * {{
-                margin: 0;
-                padding: 0;
-                box-sizing: border-box;
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>💜 EPIC ADMIN REPORT - Анонимный Бот</title>
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;700;900&family=Exo+2:wght@300;400;500;600;700&family=Rajdhani:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        * {{
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }}
+        
+        :root {{
+            --primary: #8A2BE2;
+            --primary-dark: #6A0DAD;
+            --primary-light: #9B30FF;
+            --accent: #FF00FF;
+            --accent-glow: #FF00FF;
+            --text: #FFFFFF;
+            --text-secondary: #E0E0FF;
+            --bg-dark: #0A0A1A;
+            --bg-card: rgba(255, 255, 255, 0.08);
+            --bg-card-hover: rgba(255, 255, 255, 0.12);
+        }}
+        
+        body {{
+            font-family: 'Exo 2', sans-serif;
+            background: linear-gradient(135deg, var(--bg-dark) 0%, #1A1A2E 50%, #16213E 100%);
+            min-height: 100vh;
+            color: var(--text);
+            overflow-x: hidden;
+            position: relative;
+        }}
+        
+        body::before {{
+            content: '';
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: 
+                radial-gradient(circle at 20% 80%, rgba(138, 43, 226, 0.1) 0%, transparent 50%),
+                radial-gradient(circle at 80% 20%, rgba(255, 0, 255, 0.1) 0%, transparent 50%),
+                radial-gradient(circle at 40% 40%, rgba(106, 13, 173, 0.05) 0%, transparent 50%);
+            pointer-events: none;
+            z-index: -1;
+        }}
+        
+        .container {{
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }}
+        
+        /* Эпичный хедер */
+        .epic-header {{
+            text-align: center;
+            padding: 60px 20px;
+            position: relative;
+            margin-bottom: 50px;
+        }}
+        
+        .epic-header::before {{
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: linear-gradient(45deg, transparent, rgba(138, 43, 226, 0.1), transparent);
+            animation: headerShine 8s infinite linear;
+            z-index: -1;
+        }}
+        
+        @keyframes headerShine {{
+            0% {{ transform: translateX(-100%); }}
+            100% {{ transform: translateX(100%); }}
+        }}
+        
+        .main-title {{
+            font-family: 'Orbitron', monospace;
+            font-size: 4.5em;
+            font-weight: 900;
+            background: linear-gradient(135deg, var(--primary) 0%, var(--accent) 50%, var(--primary-light) 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            margin-bottom: 20px;
+            text-shadow: 0 0 50px rgba(138, 43, 226, 0.5);
+            letter-spacing: 3px;
+            position: relative;
+            display: inline-block;
+        }}
+        
+        .main-title::after {{
+            content: '💜';
+            position: absolute;
+            right: -60px;
+            top: 50%;
+            transform: translateY(-50%);
+            font-size: 0.8em;
+            animation: pulse 2s infinite;
+        }}
+        
+        .subtitle {{
+            font-size: 1.4em;
+            color: var(--text-secondary);
+            margin-bottom: 30px;
+            font-weight: 300;
+        }}
+        
+        .timestamp {{
+            font-family: 'Orbitron', monospace;
+            font-size: 1.1em;
+            color: var(--accent);
+            background: rgba(255, 255, 255, 0.1);
+            padding: 15px 30px;
+            border-radius: 25px;
+            display: inline-block;
+            border: 1px solid rgba(255, 0, 255, 0.3);
+            backdrop-filter: blur(10px);
+            box-shadow: 0 0 20px rgba(255, 0, 255, 0.2);
+        }}
+        
+        /* Статистика */
+        .stats-grid {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 25px;
+            margin-bottom: 50px;
+        }}
+        
+        .stat-card {{
+            background: var(--bg-card);
+            backdrop-filter: blur(20px);
+            padding: 35px 25px;
+            border-radius: 20px;
+            text-align: center;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+            position: relative;
+            overflow: hidden;
+        }}
+        
+        .stat-card::before {{
+            content: '';
+            position: absolute;
+            top: 0;
+            left: -100%;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.1), transparent);
+            transition: left 0.6s ease;
+        }}
+        
+        .stat-card:hover::before {{
+            left: 100%;
+        }}
+        
+        .stat-card:hover {{
+            transform: translateY(-10px) scale(1.02);
+            border-color: var(--primary-light);
+            box-shadow: 0 15px 35px rgba(138, 43, 226, 0.3);
+        }}
+        
+        .stat-icon {{
+            font-size: 3em;
+            margin-bottom: 20px;
+            background: linear-gradient(135deg, var(--primary), var(--accent));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }}
+        
+        .stat-number {{
+            font-family: 'Orbitron', monospace;
+            font-size: 3.5em;
+            font-weight: 800;
+            margin-bottom: 10px;
+            background: linear-gradient(135deg, var(--text), var(--text-secondary));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }}
+        
+        .stat-label {{
+            color: var(--text-secondary);
+            font-size: 1.1em;
+            font-weight: 500;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+        }}
+        
+        /* Секции */
+        .section {{
+            background: var(--bg-card);
+            backdrop-filter: blur(20px);
+            padding: 40px;
+            border-radius: 25px;
+            margin-bottom: 40px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            position: relative;
+            overflow: hidden;
+        }}
+        
+        .section::before {{
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 4px;
+            background: linear-gradient(90deg, var(--primary), var(--accent), var(--primary-light));
+        }}
+        
+        .section-title {{
+            font-family: 'Orbitron', monospace;
+            font-size: 2.2em;
+            margin-bottom: 30px;
+            color: var(--text);
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }}
+        
+        .section-title i {{
+            background: linear-gradient(135deg, var(--primary), var(--accent));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            font-size: 1.2em;
+        }}
+        
+        /* Таблицы */
+        .table-container {{
+            overflow-x: auto;
+            border-radius: 15px;
+            background: rgba(255, 255, 255, 0.05);
+        }}
+        
+        table {{
+            width: 100%;
+            border-collapse: collapse;
+            background: transparent;
+        }}
+        
+        th {{
+            background: linear-gradient(135deg, rgba(138, 43, 226, 0.3), rgba(255, 0, 255, 0.2));
+            color: var(--text);
+            padding: 20px 15px;
+            text-align: left;
+            font-weight: 600;
+            font-family: 'Orbitron', monospace;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            font-size: 0.9em;
+            position: sticky;
+            top: 0;
+        }}
+        
+        td {{
+            padding: 18px 15px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+            color: var(--text-secondary);
+            transition: all 0.3s ease;
+        }}
+        
+        tr:hover td {{
+            background: rgba(255, 255, 255, 0.08);
+            color: var(--text);
+            transform: scale(1.01);
+        }}
+        
+        .badge {{
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-size: 0.85em;
+            font-weight: 600;
+            font-family: 'Orbitron', monospace;
+            letter-spacing: 1px;
+        }}
+        
+        .badge-primary {{
+            background: linear-gradient(135deg, var(--primary), var(--primary-dark));
+            color: white;
+        }}
+        
+        .badge-accent {{
+            background: linear-gradient(135deg, var(--accent), #CC00CC);
+            color: white;
+        }}
+        
+        .badge-success {{
+            background: linear-gradient(135deg, #00D4AA, #00B894);
+            color: white;
+        }}
+        
+        .user-avatar {{
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, var(--primary), var(--accent));
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            color: white;
+            margin-right: 12px;
+            font-size: 1.1em;
+        }}
+        
+        .user-info {{
+            display: flex;
+            align-items: center;
+        }}
+        
+        .message-preview {{
+            max-width: 200px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            color: var(--text-secondary);
+        }}
+        
+        /* Анимации */
+        @keyframes pulse {{
+            0%, 100% {{ transform: translateY(-50%) scale(1); }}
+            50% {{ transform: translateY(-50%) scale(1.1); }}
+        }}
+        
+        @keyframes float {{
+            0%, 100% {{ transform: translateY(0px); }}
+            50% {{ transform: translateY(-20px); }}
+        }}
+        
+        .floating {{
+            animation: float 6s ease-in-out infinite;
+        }}
+        
+        @keyframes fadeInUp {{
+            from {{
+                opacity: 0;
+                transform: translateY(40px);
             }}
-            
-            body {{
-                font-family: 'Exo 2', sans-serif;
-                background: linear-gradient(135deg, #0c0c0c 0%, #1a1a2e 50%, #16213e 100%);
-                min-height: 100vh;
-                padding: 20px;
-                color: #ffffff;
-                overflow-x: hidden;
+            to {{
+                opacity: 1;
+                transform: translateY(0);
             }}
-            
-            .container {{
-                max-width: 1800px;
-                margin: 0 auto;
-            }}
-            
-            .header {{
-                background: linear-gradient(135deg, rgba(102, 126, 234, 0.3) 0%, rgba(118, 75, 162, 0.3) 100%);
-                backdrop-filter: blur(20px);
-                padding: 50px 40px;
-                border-radius: 30px;
-                margin-bottom: 40px;
-                text-align: center;
-                border: 2px solid rgba(255, 255, 255, 0.15);
-                position: relative;
-                overflow: hidden;
-                box-shadow: 0 20px 40px rgba(0, 0, 0, 0.3);
-            }}
-            
-            .header::before {{
-                content: '';
-                position: absolute;
-                top: -50%;
-                left: -50%;
-                width: 200%;
-                height: 200%;
-                background: linear-gradient(45deg, transparent, rgba(102, 126, 234, 0.2), transparent);
-                animation: shine 8s infinite linear;
-            }}
-            
-            @keyframes shine {{
-                0% {{ transform: rotate(0deg); }}
-                100% {{ transform: rotate(360deg); }}
-            }}
-            
-            .header-content {{
-                position: relative;
-                z-index: 2;
-            }}
-            
-            .header h1 {{
-                font-family: 'Orbitron', monospace;
-                font-size: 4em;
-                margin-bottom: 20px;
-                background: linear-gradient(135deg, #667eea 0%, #764ba2 30%, #f093fb 70%, #ffd700 100%);
-                -webkit-background-clip: text;
-                -webkit-text-fill-color: transparent;
-                background-clip: text;
-                text-shadow: 0 0 50px rgba(102, 126, 234, 0.5);
-                font-weight: 900;
-                letter-spacing: 3px;
-            }}
-            
-            .header .subtitle {{
-                font-size: 1.5em;
-                color: #e0e0ff;
-                margin-bottom: 25px;
-                font-weight: 300;
-                text-shadow: 0 2px 10px rgba(0,0,0,0.5);
-            }}
-            
-            .timestamp {{
-                font-family: 'Orbitron', monospace;
-                font-size: 1em;
-                color: #ffd700;
-                background: rgba(0, 0, 0, 0.4);
-                padding: 12px 20px;
-                border-radius: 25px;
-                display: inline-block;
-                border: 2px solid rgba(255, 215, 0, 0.3);
-                box-shadow: 0 5px 15px rgba(255,215,0,0.2);
-            }}
-            
-            .dashboard {{
-                display: grid;
-                grid-template-columns: 300px 1fr;
-                gap: 30px;
-                margin-bottom: 40px;
-            }}
-            
-            .sidebar {{
-                background: linear-gradient(135deg, rgba(255, 255, 255, 0.1) 0%, rgba(255, 255, 255, 0.05) 100%);
-                backdrop-filter: blur(15px);
-                padding: 30px;
-                border-radius: 25px;
-                border: 1px solid rgba(255, 255, 255, 0.1);
-                height: fit-content;
-            }}
-            
-            .nav-item {{
-                display: flex;
-                align-items: center;
-                gap: 15px;
-                padding: 15px 20px;
-                margin-bottom: 10px;
-                border-radius: 15px;
-                cursor: pointer;
-                transition: all 0.3s ease;
-                color: #e0e0ff;
-                text-decoration: none;
-            }}
-            
-            .nav-item:hover {{
-                background: rgba(102, 126, 234, 0.2);
-                transform: translateX(10px);
-            }}
-            
-            .nav-item.active {{
-                background: linear-gradient(135deg, #667eea, #764ba2);
-                color: white;
-            }}
-            
-            .nav-icon {{
-                font-size: 1.2em;
-                width: 25px;
-                text-align: center;
-            }}
-            
-            .main-content {{
-                display: grid;
-                gap: 30px;
+        }}
+        
+        .fade-in {{
+            animation: fadeInUp 0.8s ease-out forwards;
+        }}
+        
+        /* Футер */
+        .epic-footer {{
+            text-align: center;
+            padding: 60px 20px;
+            margin-top: 50px;
+            background: linear-gradient(135deg, rgba(138, 43, 226, 0.1), rgba(255, 0, 255, 0.05));
+            border-radius: 25px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            position: relative;
+            overflow: hidden;
+        }}
+        
+        .footer-title {{
+            font-family: 'Orbitron', monospace;
+            font-size: 2em;
+            margin-bottom: 20px;
+            background: linear-gradient(135deg, var(--primary), var(--accent));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }}
+        
+        .footer-subtitle {{
+            color: var(--text-secondary);
+            font-size: 1.1em;
+            margin-bottom: 30px;
+        }}
+        
+        .tech-stack {{
+            display: flex;
+            justify-content: center;
+            gap: 20px;
+            flex-wrap: wrap;
+            margin-top: 30px;
+        }}
+        
+        .tech-item {{
+            background: rgba(255, 255, 255, 0.1);
+            padding: 10px 20px;
+            border-radius: 15px;
+            font-family: 'Orbitron', monospace;
+            font-size: 0.9em;
+            color: var(--text-secondary);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }}
+        
+        /* Адаптивность */
+        @media (max-width: 768px) {{
+            .main-title {{
+                font-size: 2.8em;
             }}
             
             .stats-grid {{
-                display: grid;
-                grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-                gap: 25px;
-                margin-bottom: 30px;
-            }}
-            
-            .stat-card {{
-                background: linear-gradient(135deg, rgba(255, 255, 255, 0.12) 0%, rgba(255, 255, 255, 0.06) 100%);
-                backdrop-filter: blur(15px);
-                padding: 35px 30px;
-                border-radius: 25px;
-                text-align: center;
-                border: 1px solid rgba(255, 255, 255, 0.12);
-                transition: all 0.4s ease;
-                position: relative;
-                overflow: hidden;
-                box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
-            }}
-            
-            .stat-card::before {{
-                content: '';
-                position: absolute;
-                top: 0;
-                left: -100%;
-                width: 100%;
-                height: 100%;
-                background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.1), transparent);
-                transition: left 0.6s ease;
-            }}
-            
-            .stat-card:hover::before {{
-                left: 100%;
-            }}
-            
-            .stat-card:hover {{
-                transform: translateY(-12px) scale(1.03);
-                box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4);
-                border-color: rgba(102, 126, 234, 0.4);
-            }}
-            
-            .stat-card h3 {{
-                font-family: 'Orbitron', monospace;
-                font-size: 3.5em;
-                margin-bottom: 20px;
-                background: linear-gradient(135deg, #ffd700 0%, #ff6b6b 25%, #667eea 50%, #764ba2 75%, #f093fb 100%);
-                -webkit-background-clip: text;
-                -webkit-text-fill-color: transparent;
-                background-clip: text;
-                font-weight: 800;
-            }}
-            
-            .stat-card p {{
-                color: #e0e0ff;
-                font-size: 1.1em;
-                font-weight: 500;
-                text-transform: uppercase;
-                letter-spacing: 1.5px;
+                grid-template-columns: 1fr;
             }}
             
             .section {{
-                background: linear-gradient(135deg, rgba(255, 255, 255, 0.1) 0%, rgba(255, 255, 255, 0.04) 100%);
-                backdrop-filter: blur(20px);
-                padding: 35px;
-                border-radius: 25px;
-                margin-bottom: 35px;
-                border: 1px solid rgba(255, 255, 255, 0.1);
-                position: relative;
-                overflow: hidden;
-                box-shadow: 0 15px 35px rgba(0, 0, 0, 0.2);
-            }}
-            
-            .section::before {{
-                content: '';
-                position: absolute;
-                top: 0;
-                left: 0;
-                right: 0;
-                height: 4px;
-                background: linear-gradient(90deg, #667eea, #764ba2, #f093fb, #ffd700);
-            }}
-            
-            .section h2 {{
-                font-family: 'Orbitron', monospace;
-                font-size: 2em;
-                margin-bottom: 30px;
-                color: #ffffff;
-                display: flex;
-                align-items: center;
-                gap: 20px;
-                font-weight: 700;
-            }}
-            
-            .section h2 i {{
-                background: linear-gradient(135deg, #667eea, #764ba2);
-                -webkit-background-clip: text;
-                -webkit-text-fill-color: transparent;
-                font-size: 1.3em;
-            }}
-            
-            table {{
-                width: 100%;
-                border-collapse: collapse;
-                background: rgba(255, 255, 255, 0.03);
-                border-radius: 20px;
-                overflow: hidden;
-                margin-top: 20px;
-                box-shadow: 0 10px 25px rgba(0, 0, 0, 0.1);
+                padding: 25px;
             }}
             
             th, td {{
-                padding: 18px 25px;
-                text-align: left;
-                border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-            }}
-            
-            th {{
-                background: linear-gradient(135deg, rgba(102, 126, 234, 0.25) 0%, rgba(118, 75, 162, 0.25) 100%);
-                color: #ffd700;
-                font-weight: 700;
-                font-family: 'Orbitron', monospace;
-                text-transform: uppercase;
-                letter-spacing: 1.5px;
-                font-size: 0.95em;
-                position: sticky;
-                top: 0;
-            }}
-            
-            td {{
-                color: #e0e0ff;
-                font-weight: 400;
-                transition: all 0.3s ease;
-            }}
-            
-            tr:hover {{
-                background: rgba(255, 255, 255, 0.08);
-                transform: scale(1.01);
-            }}
-            
-            .badge {{
-                display: inline-flex;
-                align-items: center;
-                gap: 6px;
-                padding: 8px 16px;
-                border-radius: 20px;
-                font-size: 0.85em;
-                font-weight: 600;
-                font-family: 'Orbitron', monospace;
-                letter-spacing: 1px;
-                text-transform: uppercase;
-            }}
-            
-            .badge-success {{
-                background: linear-gradient(135deg, #4CAF50, #45a049);
-                color: white;
-            }}
-            
-            .badge-info {{
-                background: linear-gradient(135deg, #2196F3, #1976D2);
-                color: white;
-            }}
-            
-            .badge-warning {{
-                background: linear-gradient(135deg, #FF9800, #F57C00);
-                color: white;
-            }}
-            
-            .badge-purple {{
-                background: linear-gradient(135deg, #667eea, #764ba2);
-                color: white;
-            }}
-            
-            .badge-danger {{
-                background: linear-gradient(135deg, #f44336, #d32f2f);
-                color: white;
-            }}
-            
-            .file-type {{
-                display: inline-flex;
-                align-items: center;
-                justify-content: center;
-                width: 35px;
-                height: 35px;
-                border-radius: 10px;
-                margin-right: 12px;
-                font-weight: bold;
-                font-size: 1.1em;
-            }}
-            
-            .type-text {{ background: linear-gradient(135deg, #4CAF50, #45a049); }}
-            .type-photo {{ background: linear-gradient(135deg, #2196F3, #1976D2); }}
-            .type-video {{ background: linear-gradient(135deg, #FF9800, #F57C00); }}
-            .type-document {{ background: linear-gradient(135deg, #9C27B0, #7B1FA2); }}
-            .type-voice {{ background: linear-gradient(135deg, #FF5722, #E64A19); }}
-            
-            .user-link {{
-                color: #ffd700;
-                text-decoration: none;
-                font-weight: 600;
-                transition: all 0.3s ease;
-            }}
-            
-            .user-link:hover {{
-                color: #ff6b6b;
-                text-decoration: underline;
-            }}
-            
-            .link-url {{
-                background: rgba(255,255,255,0.1);
-                padding: 8px 12px;
-                border-radius: 8px;
-                font-family: monospace;
+                padding: 12px 8px;
                 font-size: 0.9em;
-                color: #a0a0ff;
-                border: 1px solid rgba(255,255,255,0.2);
             }}
-            
-            .message-preview {{
-                max-width: 300px;
-                overflow: hidden;
-                text-overflow: ellipsis;
-                white-space: nowrap;
-                color: #b0b0ff;
-            }}
-            
-            .conversation-view {{
-                background: rgba(255,255,255,0.05);
-                border-radius: 15px;
-                padding: 20px;
-                margin: 10px 0;
-                border-left: 4px solid #667eea;
-            }}
-            
-            .message-bubble {{
-                background: rgba(102, 126, 234, 0.2);
-                border-radius: 15px;
-                padding: 15px;
-                margin: 10px 0;
-                border: 1px solid rgba(102, 126, 234, 0.3);
-            }}
-            
-            .message-sender {{
-                font-weight: bold;
-                color: #ffd700;
-                margin-bottom: 5px;
-            }}
-            
-            .message-time {{
-                font-size: 0.8em;
-                color: #a0a0ff;
-                float: right;
-            }}
-            
-            @keyframes fadeInUp {{
-                from {{ 
-                    opacity: 0; 
-                    transform: translateY(40px); 
-                }}
-                to {{ 
-                    opacity: 1; 
-                    transform: translateY(0); 
-                }}
-            }}
-            
-            .fade-in {{
-                animation: fadeInUp 0.8s ease-out forwards;
-            }}
-            
-            .pulse {{
-                animation: pulse 3s infinite;
-            }}
-            
-            @keyframes pulse {{
-                0% {{ box-shadow: 0 0 0 0 rgba(102, 126, 234, 0.4); }}
-                70% {{ box-shadow: 0 0 0 20px rgba(102, 126, 234, 0); }}
-                100% {{ box-shadow: 0 0 0 0 rgba(102, 126, 234, 0); }}
-            }}
-            
-            .floating {{
-                animation: floating 4s ease-in-out infinite;
-            }}
-            
-            @keyframes floating {{
-                0% {{ transform: translateY(0px); }}
-                50% {{ transform: translateY(-15px); }}
-                100% {{ transform: translateY(0px); }}
-            }}
-            
-            .footer {{
-                text-align: center;
-                margin-top: 60px;
-                padding: 40px;
-                background: linear-gradient(135deg, rgba(102, 126, 234, 0.15) 0%, rgba(118, 75, 162, 0.15) 100%);
-                border-radius: 25px;
-                border: 1px solid rgba(255, 255, 255, 0.1);
-            }}
-            
-            .footer-text {{
-                font-family: 'Orbitron', monospace;
-                font-size: 1.3em;
-                color: #ffd700;
-                letter-spacing: 3px;
-                margin-bottom: 15px;
-            }}
-            
-            .user-avatar {{
-                width: 45px;
-                height: 45px;
-                border-radius: 50%;
-                background: linear-gradient(135deg, #667eea, #764ba2);
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                font-weight: bold;
-                color: white;
-                margin-right: 12px;
-                font-size: 1.2em;
-            }}
-            
-            .progress-bar {{
-                width: 100%;
-                height: 8px;
-                background: rgba(255, 255, 255, 0.1);
-                border-radius: 4px;
-                overflow: hidden;
-                margin-top: 8px;
-            }}
-            
-            .progress-fill {{
-                height: 100%;
-                background: linear-gradient(90deg, #667eea, #764ba2, #f093fb);
-                border-radius: 4px;
-                transition: width 1s ease-in-out;
-            }}
-            
-            .search-box {{
-                background: rgba(255, 255, 255, 0.08);
-                border: 1px solid rgba(255, 255, 255, 0.2);
-                border-radius: 15px;
-                padding: 15px 20px;
-                color: white;
-                font-size: 1em;
-                width: 100%;
-                margin-bottom: 20px;
-                backdrop-filter: blur(10px);
-            }}
-            
-            .search-box::placeholder {{
-                color: #a0a0ff;
-            }}
-            
-            .view-conversation-btn {{
-                background: linear-gradient(135deg, #667eea, #764ba2);
-                color: white;
-                border: none;
-                padding: 8px 15px;
-                border-radius: 10px;
-                cursor: pointer;
-                font-size: 0.9em;
-                transition: all 0.3s ease;
-            }}
-            
-            .view-conversation-btn:hover {{
-                transform: translateY(-2px);
-                box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
-            }}
-            
-            @media (max-width: 1200px) {{
-                .dashboard {{
-                    grid-template-columns: 1fr;
-                }}
-                
-                .sidebar {{
-                    display: none;
-                }}
-            }}
-            
-            @media (max-width: 768px) {{
-                .header h1 {{
-                    font-size: 2.8em;
-                }}
-                
-                .stats-grid {{
-                    grid-template-columns: 1fr;
-                }}
-                
-                th, td {{
-                    padding: 12px 15px;
-                    font-size: 0.9em;
-                }}
-                
-                .section {{
-                    padding: 25px;
-                }}
-            }}
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <!-- Заголовок -->
-            <div class="header fade-in">
-                <div class="header-content">
-                    <h1 class="floating"><i class="fas fa-robot"></i> АДМИН ПАНЕЛЬ</h1>
-                    <div class="subtitle">Расширенная система мониторинга анонимного бота</div>
-                    <div class="timestamp pulse">
-                        <i class="fas fa-clock"></i> Отчет сгенерирован: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")} (KRAT)
-                    </div>
+        }}
+        
+        /* Специальные эффекты */
+        .glow {{
+            text-shadow: 0 0 20px var(--accent-glow), 0 0 40px var(--accent-glow);
+        }}
+        
+        .neon-border {{
+            box-shadow: 0 0 10px var(--primary), 0 0 20px var(--primary), 0 0 40px var(--accent);
+        }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Эпичный хедер -->
+        <div class="epic-header fade-in">
+            <h1 class="main-title floating">EPIC ADMIN REPORT</h1>
+            <div class="subtitle">Расширенная аналитика анонимного бота в реальном времени</div>
+            <div class="timestamp glow">
+                <i class="fas fa-clock"></i> Отчет сгенерирован: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")} (Krasnoyarsk)
+            </div>
+        </div>
+        
+        <!-- Основная статистика -->
+        <div class="stats-grid">
+            <div class="stat-card fade-in">
+                <div class="stat-icon">
+                    <i class="fas fa-users"></i>
                 </div>
+                <div class="stat-number">{stats['users']}</div>
+                <div class="stat-label">Пользователи</div>
             </div>
             
-            <div class="dashboard">
-                <!-- Боковая панель -->
-                <div class="sidebar fade-in">
-                    <div class="nav-item active" onclick="showSection('stats')">
-                        <div class="nav-icon"><i class="fas fa-tachometer-alt"></i></div>
-                        <div>Общая статистика</div>
-                    </div>
-                    <div class="nav-item" onclick="showSection('users')">
-                        <div class="nav-icon"><i class="fas fa-users"></i></div>
-                        <div>Пользователи ({data['stats']['users']})</div>
-                    </div>
-                    <div class="nav-item" onclick="showSection('links')">
-                        <div class="nav-icon"><i class="fas fa-link"></i></div>
-                        <div>Ссылки ({data['stats']['links']})</div>
-                    </div>
-                    <div class="nav-item" onclick="showSection('messages')">
-                        <div class="nav-icon"><i class="fas fa-envelope"></i></div>
-                        <div>Сообщения ({data['stats']['messages']})</div>
-                    </div>
-                    <div class="nav-item" onclick="showSection('conversations')">
-                        <div class="nav-icon"><i class="fas fa-comments"></i></div>
-                        <div>Переписки</div>
-                    </div>
+            <div class="stat-card fade-in">
+                <div class="stat-icon">
+                    <i class="fas fa-link"></i>
                 </div>
-                
-                <!-- Основной контент -->
-                <div class="main-content">
-                    <!-- Общая статистика -->
-                    <div id="stats-section" class="section-section">
-                        <!-- Основная статистика -->
-                        <div class="stats-grid">
-                            <div class="stat-card fade-in">
-                                <h3>{data['stats']['users']}</h3>
-                                <p><i class="fas fa-users"></i> Всего пользователей</p>
-                                <div class="progress-bar">
-                                    <div class="progress-fill" style="width: {min(data['stats']['users'] * 2, 100)}%"></div>
-                                </div>
-                            </div>
-                            <div class="stat-card fade-in">
-                                <h3>{data['stats']['links']}</h3>
-                                <p><i class="fas fa-link"></i> Активных ссылок</p>
-                                <div class="progress-bar">
-                                    <div class="progress-fill" style="width: {min(data['stats']['links'] * 5, 100)}%"></div>
-                                </div>
-                            </div>
-                            <div class="stat-card fade-in">
-                                <h3>{data['stats']['messages']}</h3>
-                                <p><i class="fas fa-envelope"></i> Всего сообщений</p>
-                                <div class="progress-bar">
-                                    <div class="progress-fill" style="width: {min(data['stats']['messages'] * 0.5, 100)}%"></div>
-                                </div>
-                            </div>
-                            <div class="stat-card fade-in">
-                                <h3>{data['stats']['replies']}</h3>
-                                <p><i class="fas fa-reply"></i> Ответов</p>
-                                <div class="progress-bar">
-                                    <div class="progress-fill" style="width: {min(data['stats']['replies'] * 2, 100)}%"></div>
-                                </div>
-                            </div>
-                        </div>
-                        
-                        <!-- Статистика файлов -->
-                        <div class="stats-grid">
-                            <div class="stat-card fade-in">
-                                <h3>{data['stats']['photos']}</h3>
-                                <p><i class="fas fa-image"></i> Фотографий</p>
-                            </div>
-                            <div class="stat-card fade-in">
-                                <h3>{data['stats']['videos']}</h3>
-                                <p><i class="fas fa-video"></i> Видео</p>
-                            </div>
-                            <div class="stat-card fade-in">
-                                <h3>{data['stats']['documents']}</h3>
-                                <p><i class="fas fa-file"></i> Документов</p>
-                            </div>
-                            <div class="stat-card fade-in">
-                                <h3>{data['stats']['voice']}</h3>
-                                <p><i class="fas fa-microphone"></i> Голосовых</p>
-                            </div>
-                        </div>
-                    </div>
-                    
-                    <!-- Пользователи -->
-                    <div id="users-section" class="section" style="display: none;">
-                        <h2><i class="fas fa-users"></i> АКТИВНЫЕ ПОЛЬЗОВАТЕЛИ</h2>
-                        <input type="text" class="search-box" placeholder="🔍 Поиск пользователей..." onkeyup="searchTable('users-table', this)">
-                        <table id="users-table">
-                            <thead>
-                                <tr>
-                                    <th>ID</th>
-                                    <th>Информация</th>
-                                    <th>Регистрация</th>
-                                    <th>Активность</th>
-                                    <th>Статистика</th>
-                                    <th>Действия</th>
-                                </tr>
-                            </thead>
-                            <tbody>
+                <div class="stat-number">{stats['links']}</div>
+                <div class="stat-label">Активные ссылки</div>
+            </div>
+            
+            <div class="stat-card fade-in">
+                <div class="stat-icon">
+                    <i class="fas fa-envelope"></i>
+                </div>
+                <div class="stat-number">{stats['messages']}</div>
+                <div class="stat-label">Сообщения</div>
+            </div>
+            
+            <div class="stat-card fade-in">
+                <div class="stat-icon">
+                    <i class="fas fa-reply"></i>
+                </div>
+                <div class="stat-number">{stats['replies']}</div>
+                <div class="stat-label">Ответы</div>
+            </div>
+        </div>
+        
+        <!-- Дополнительная статистика -->
+        <div class="stats-grid">
+            <div class="stat-card fade-in">
+                <div class="stat-icon">
+                    <i class="fas fa-image"></i>
+                </div>
+                <div class="stat-number">{stats['photos']}</div>
+                <div class="stat-label">Фотографии</div>
+            </div>
+            
+            <div class="stat-card fade-in">
+                <div class="stat-icon">
+                    <i class="fas fa-video"></i>
+                </div>
+                <div class="stat-number">{stats['videos']}</div>
+                <div class="stat-label">Видео</div>
+            </div>
+            
+            <div class="stat-card fade-in">
+                <div class="stat-icon">
+                    <i class="fas fa-file"></i>
+                </div>
+                <div class="stat-number">{stats['documents']}</div>
+                <div class="stat-label">Документы</div>
+            </div>
+            
+            <div class="stat-card fade-in">
+                <div class="stat-icon">
+                    <i class="fas fa-microphone"></i>
+                </div>
+                <div class="stat-number">{stats['voice']}</div>
+                <div class="stat-label">Голосовые</div>
+            </div>
+        </div>
+        
+        <!-- Топ пользователей -->
+        <div class="section fade-in">
+            <h2 class="section-title">
+                <i class="fas fa-crown"></i> ТОП ПОЛЬЗОВАТЕЛИ
+            </h2>
+            <div class="table-container">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Пользователь</th>
+                            <th>Username</th>
+                            <th>Регистрация</th>
+                        </tr>
+                    </thead>
+                    <tbody>
     '''
     
-    for user in data['users'][:20]:
-        username_display = f"@{user[1]}" if user[1] else (html.escape(user[2]) if user[2] else f"ID:{user[0]}")
+    for user in users:
+        username = f"@{user[1]}" if user[1] else "—"
+        first_name = html.escape(user[2]) if user[2] else "No Name"
         created = user[3].split()[0] if isinstance(user[3], str) else user[3].strftime("%Y-%m-%d")
         
         html_content += f'''
-                                <tr>
-                                    <td><span class="badge badge-purple">{user[0]}</span></td>
-                                    <td>
-                                        <div style="display: flex; align-items: center;">
-                                            <div class="user-avatar">
-                                                {username_display[0].upper() if username_display else 'U'}
-                                            </div>
-                                            <div>
-                                                <div style="font-weight: 600; font-size: 1.1em;">{username_display}</div>
-                                                <div style="font-size: 0.85em; color: #a0a0ff;">{html.escape(user[2]) if user[2] else 'No Name'}</div>
-                                            </div>
-                                        </div>
-                                    </td>
-                                    <td class="timestamp">{created}</td>
-                                    <td>
-                                        <span class="badge badge-info">
-                                            <i class="fas fa-link"></i> {user[4]} ссылок
-                                        </span>
-                                    </td>
-                                    <td>
-                                        <span class="badge badge-success">
-                                            <i class="fas fa-envelope"></i> {user[5]}
-                                        </span>
-                                        <span class="badge badge-warning">
-                                            <i class="fas fa-paper-plane"></i> {user[6]}
-                                        </span>
-                                    </td>
-                                    <td>
-                                        <button class="view-conversation-btn" onclick="viewUserConversation({user[0]})">
-                                            <i class="fas fa-comments"></i> Переписка
-                                        </button>
-                                    </td>
-                                </tr>
+                        <tr>
+                            <td><span class="badge badge-primary">{user[0]}</span></td>
+                            <td>
+                                <div class="user-info">
+                                    <div class="user-avatar">
+                                        {first_name[0].upper() if first_name else 'U'}
+                                    </div>
+                                    <div>{first_name}</div>
+                                </div>
+                            </td>
+                            <td>{username}</td>
+                            <td>{created}</td>
+                        </tr>
         '''
     
     html_content += '''
-                            </tbody>
-                        </table>
-                    </div>
-                    
-                    <!-- Ссылки -->
-                    <div id="links-section" class="section" style="display: none;">
-                        <h2><i class="fas fa-link"></i> АКТИВНЫЕ ССЫЛКИ</h2>
-                        <input type="text" class="search-box" placeholder="🔍 Поиск ссылок..." onkeyup="searchTable('links-table', this)">
-                        <table id="links-table">
-                            <thead>
-                                <tr>
-                                    <th>ID Ссылки</th>
-                                    <th>Название</th>
-                                    <th>Владелец</th>
-                                    <th>Создана</th>
-                                    <th>Сообщения</th>
-                                    <th>Действия</th>
-                                </tr>
-                            </thead>
-                            <tbody>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        
+        <!-- Активные ссылки -->
+        <div class="section fade-in">
+            <h2 class="section-title">
+                <i class="fas fa-fire"></i> АКТИВНЫЕ ССЫЛКИ
+            </h2>
+            <div class="table-container">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>ID Ссылки</th>
+                            <th>Название</th>
+                            <th>Владелец</th>
+                            <th>Сообщения</th>
+                            <th>Создана</th>
+                        </tr>
+                    </thead>
+                    <tbody>
     '''
     
-    for link in data['links'][:25]:
-        owner = f"@{link[5]}" if link[5] else (html.escape(link[6]) if link[6] else f"ID:{link[7]}")
+    for link in links:
+        owner = f"@{link[4]}" if link[4] else (html.escape(link[5]) if link[5] else f"ID:?")
         created = link[3].split()[0] if isinstance(link[3], str) else link[3].strftime("%Y-%m-%d")
         
         html_content += f'''
-                                <tr>
-                                    <td><code class="link-url">{link[0]}</code></td>
-                                    <td>
-                                        <div style="font-weight: 600; font-size: 1.1em;">{html.escape(link[1])}</div>
-                                        <div style="font-size: 0.85em; color: #a0a0ff;">{html.escape(link[2]) if link[2] else 'Без описания'}</div>
-                                    </td>
-                                    <td>
-                                        <a href="#" class="user-link">{owner}</a>
-                                    </td>
-                                    <td class="timestamp">{created}</td>
-                                    <td>
-                                        <span class="badge { 'badge-success' if link[8] > 0 else 'badge-warning' }">
-                                            <i class="fas fa-envelope"></i> {link[8]} сообщ.
-                                        </span>
-                                    </td>
-                                    <td>
-                                        <button class="view-conversation-btn" onclick="viewLinkMessages('{link[0]}')">
-                                            <i class="fas fa-eye"></i> Сообщения
-                                        </button>
-                                    </td>
-                                </tr>
+                        <tr>
+                            <td><code>{link[0]}</code></td>
+                            <td>{html.escape(link[1])}</td>
+                            <td>{owner}</td>
+                            <td><span class="badge badge-accent">{link[6]}</span></td>
+                            <td>{created}</td>
+                        </tr>
         '''
     
     html_content += '''
-                            </tbody>
-                        </table>
-                    </div>
-                    
-                    <!-- Сообщения -->
-                    <div id="messages-section" class="section" style="display: none;">
-                        <h2><i class="fas fa-envelope"></i> ПОСЛЕДНИЕ СООБЩЕНИЯ</h2>
-                        <input type="text" class="search-box" placeholder="🔍 Поиск сообщений..." onkeyup="searchTable('messages-table', this)">
-                        <table id="messages-table">
-                            <thead>
-                                <tr>
-                                    <th>Тип</th>
-                                    <th>От</th>
-                                    <th>Кому</th>
-                                    <th>Ссылка</th>
-                                    <th>Сообщение</th>
-                                    <th>Время</th>
-                                    <th>Размер</th>
-                                </tr>
-                            </thead>
-                            <tbody>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        
+        <!-- Последние сообщения -->
+        <div class="section fade-in">
+            <h2 class="section-title">
+                <i class="fas fa-bolt"></i> ПОСЛЕДНИЕ СООБЩЕНИЯ
+            </h2>
+            <div class="table-container">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Тип</th>
+                            <th>От</th>
+                            <th>Кому</th>
+                            <th>Сообщение</th>
+                            <th>Время</th>
+                        </tr>
+                    </thead>
+                    <tbody>
     '''
     
-    for msg in data['recent_messages'][:30]:
+    for msg in messages:
         msg_type_icon = {
             'text': '📝',
             'photo': '🖼️',
@@ -1710,194 +1367,91 @@ def generate_html_report():
             'voice': '🎤'
         }.get(msg[2], '📄')
         
-        type_class = {
-            'text': 'type-text',
-            'photo': 'type-photo',
-            'video': 'type-video',
-            'document': 'type-document',
-            'voice': 'type-voice'
-        }.get(msg[2], 'type-text')
-        
-        file_size = f"{(msg[3] // 1024):,} KB" if msg[3] else '-'
-        from_user = f"@{msg[6]}" if msg[6] else (html.escape(msg[7]) if msg[7] else f"ID:{msg[8]}")
-        to_user = f"@{msg[9]}" if msg[9] else (html.escape(msg[10]) if msg[10] else f"ID:{msg[11]}")
+        from_user = f"@{msg[6]}" if msg[6] else (html.escape(msg[7]) if msg[7] else "Аноним")
+        to_user = f"@{msg[8]}" if msg[8] else (html.escape(msg[9]) if msg[9] else "Аноним")
+        message_preview = html.escape(msg[1][:30] + '...' if msg[1] and len(msg[1]) > 30 else msg[1]) if msg[1] else f"Медиа: {msg[2]}"
         time_display = format_datetime(msg[5])
-        message_preview = html.escape(msg[1][:50] + '...' if len(msg[1]) > 50 else msg[1]) if msg[1] else f"Медиа: {msg[2]}"
         
         html_content += f'''
-                                <tr>
-                                    <td>
-                                        <div style="display: flex; align-items: center;">
-                                            <div class="file-type {type_class}">
-                                                {msg_type_icon}
-                                            </div>
-                                            <span style="text-transform: uppercase; font-size: 0.8em; font-weight: 600;">{msg[2]}</span>
-                                        </div>
-                                    </td>
-                                    <td>
-                                        <a href="#" class="user-link">{from_user}</a>
-                                    </td>
-                                    <td>
-                                        <a href="#" class="user-link">{to_user}</a>
-                                    </td>
-                                    <td>
-                                        <span class="badge badge-purple">{html.escape(msg[12]) if msg[12] else 'N/A'}</span>
-                                    </td>
-                                    <td class="message-preview" title="{html.escape(msg[1]) if msg[1] else ''}">
-                                        {message_preview}
-                                    </td>
-                                    <td class="timestamp">{time_display}</td>
-                                    <td>{file_size}</td>
-                                </tr>
+                        <tr>
+                            <td>{msg_type_icon}</td>
+                            <td>{from_user}</td>
+                            <td>{to_user}</td>
+                            <td class="message-preview">{message_preview}</td>
+                            <td>{time_display}</td>
+                        </tr>
         '''
     
     html_content += '''
-                            </tbody>
-                        </table>
-                    </div>
-                    
-                    <!-- Переписки -->
-                    <div id="conversations-section" class="section" style="display: none;">
-                        <h2><i class="fas fa-comments"></i> ПРОСМОТР ПЕРЕПИСОК</h2>
-                        <div class="conversation-view">
-                            <h3><i class="fas fa-info-circle"></i> Выберите пользователя или ссылку для просмотра переписки</h3>
-                            <p>Используйте кнопки "Переписка" в таблице пользователей или "Сообщения" в таблице ссылок для просмотра полной истории сообщений.</p>
-                        </div>
-                    </div>
-                </div>
-            </div>
-            
-            <!-- Футер -->
-            <div class="footer fade-in">
-                <div class="footer-text">
-                    <i class="fas fa-robot"></i> АНОНИМНЫЙ БОТ | РАСШИРЕННАЯ СИСТЕМА МОНИТОРИНГА
-                </div>
-                <div style="margin-top: 20px; color: #a0a0ff; font-size: 1em;">
-                    <i class="fas fa-shield-alt"></i> Защищенная система | <i class="fas fa-bolt"></i> Реальное время | <i class="fas fa-chart-line"></i> Полная аналитика
-                </div>
-                <div style="margin-top: 15px; color: #ffd700; font-family: 'Orbitron', monospace; font-size: 0.9em;">
-                    SIROK228 | POWERED BY ADVANCED AI TECHNOLOGY
-                </div>
+                    </tbody>
+                </table>
             </div>
         </div>
         
-        <script>
-            // Навигация по разделам
-            function showSection(sectionName) {{
-                // Скрываем все разделы
-                document.querySelectorAll('.section, .section-section').forEach(section => {{
-                    section.style.display = 'none';
-                }});
-                
-                // Показываем выбранный раздел
-                const targetSection = document.getElementById(sectionName + '-section');
-                if (targetSection) {{
-                    targetSection.style.display = 'block';
-                }}
-                
-                // Обновляем активную кнопку навигации
-                document.querySelectorAll('.nav-item').forEach(item => {{
-                    item.classList.remove('active');
-                }});
-                event.currentTarget.classList.add('active');
-            }}
+        <!-- Эпичный футер -->
+        <div class="epic-footer fade-in">
+            <div class="footer-title">SIROK228 SYSTEMS</div>
+            <div class="footer-subtitle">Мощная аналитика для анонимного бота</div>
             
-            // Поиск по таблицам
-            function searchTable(tableId, input) {{
-                const searchTerm = input.value.toLowerCase();
-                const table = document.getElementById(tableId);
-                const rows = table.querySelectorAll('tbody tr');
-                
-                rows.forEach(row => {{
-                    const text = row.textContent.toLowerCase();
-                    row.style.display = text.includes(searchTerm) ? '' : 'none';
-                }});
-            }}
+            <div class="tech-stack">
+                <div class="tech-item">Python 3.11</div>
+                <div class="tech-item">SQLite3</div>
+                <div class="tech-item">Telegram API</div>
+                <div class="tech-item">GitHub Sync</div>
+                <div class="tech-item">HTML5 + CSS3</div>
+            </div>
             
-            // Просмотр переписки пользователя
-            function viewUserConversation(userId) {{
-                showSection('conversations');
-                const section = document.getElementById('conversations-section');
-                section.innerHTML = `
-                    <h2><i class="fas fa-comments"></i> ПЕРЕПИСКА ПОЛЬЗОВАТЕЛЯ ID: ${{userId}}</h2>
-                    <div class="conversation-view">
-                        <div class="message-bubble">
-                            <div class="message-sender">Пользователь ${{userId}} <span class="message-time">2024-01-01 12:00</span></div>
-                            <div>Пример сообщения от пользователя</div>
-                        </div>
-                        <div class="message-bubble">
-                            <div class="message-sender">Аноним <span class="message-time">2024-01-01 12:05</span></div>
-                            <div>Пример ответа анонима</div>
-                        </div>
-                        <button class="view-conversation-btn" onclick="showSection('users')" style="margin-top: 20px;">
-                            <i class="fas fa-arrow-left"></i> Назад к пользователям
-                        </button>
-                    </div>
-                `;
-            }}
-            
-            // Просмотр сообщений ссылки
-            function viewLinkMessages(linkId) {{
-                showSection('conversations');
-                const section = document.getElementById('conversations-section');
-                section.innerHTML = `
-                    <h2><i class="fas fa-comments"></i> СООБЩЕНИЯ ССЫЛКИ: ${{linkId}}</h2>
-                    <div class="conversation-view">
-                        <div class="message-bubble">
-                            <div class="message-sender">Аноним <span class="message-time">2024-01-01 12:00</span></div>
-                            <div>Пример анонимного сообщения через ссылку</div>
-                        </div>
-                        <div class="message-bubble">
-                            <div class="message-sender">Владелец ссылки <span class="message-time">2024-01-01 12:05</span></div>
-                            <div>Пример ответа владельца ссылки</div>
-                        </div>
-                        <button class="view-conversation-btn" onclick="showSection('links')" style="margin-top: 20px;">
-                            <i class="fas fa-arrow-left"></i> Назад к ссылкам
-                        </button>
-                    </div>
-                `;
-            }}
-            
-            // Анимации при прокрутке
-            const observerOptions = {{
-                threshold: 0.05,
-                rootMargin: '0px 0px -50px 0px'
-            }};
-            
-            const observer = new IntersectionObserver((entries) => {{
-                entries.forEach(entry => {{
-                    if (entry.isIntersecting) {{
-                        entry.target.style.opacity = '1';
-                        entry.target.style.transform = 'translateY(0)';
-                        entry.target.style.animation = 'fadeInUp 0.8s ease-out forwards';
-                    }}
-                }});
-            }}, observerOptions);
-            
-            document.querySelectorAll('.section, .stat-card').forEach(el => {{
-                el.style.opacity = '0';
-                el.style.transform = 'translateY(40px)';
-                el.style.transition = 'all 0.8s ease-out';
-                observer.observe(el);
-            }});
-            
-            // Анимация прогресс-баров
-            setTimeout(() => {{
-                document.querySelectorAll('.progress-fill').forEach(bar => {{
-                    const width = bar.style.width;
-                    bar.style.width = '0';
-                    setTimeout(() => {{
-                        bar.style.transition = 'width 2s ease-in-out';
-                        bar.style.width = width;
-                    }}, 200);
-                }});
-            }}, 500);
-            
-            // Показываем раздел статистики по умолчанию
-            showSection('stats');
-        </script>
-    </body>
-    </html>
+            <div style="margin-top: 30px; color: var(--text-secondary);">
+                <i class="fas fa-shield-alt"></i> Защищенная система | 
+                <i class="fas fa-bolt"></i> Реальное время | 
+                <i class="fas fa-chart-line"></i> Продвинутая аналитика
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Анимации при прокрутке
+        const observerOptions = {
+            threshold: 0.1,
+            rootMargin: '0px 0px -50px 0px'
+        };
+        
+        const observer = new IntersectionObserver((entries) => {
+            entries.forEach(entry => {
+                if (entry.isIntersecting) {
+                    entry.target.style.opacity = '1';
+                    entry.target.style.transform = 'translateY(0)';
+                }
+            });
+        }, observerOptions);
+        
+        // Применяем анимации ко всем элементам
+        document.querySelectorAll('.fade-in').forEach(el => {
+            el.style.opacity = '0';
+            el.style.transform = 'translateY(30px)';
+            el.style.transition = 'all 0.8s ease-out';
+            observer.observe(el);
+        });
+        
+        // Случайные свечения для карточек
+        setInterval(() => {
+            const cards = document.querySelectorAll('.stat-card');
+            const randomCard = cards[Math.floor(Math.random() * cards.length)];
+            randomCard.classList.add('neon-border');
+            setTimeout(() => {
+                randomCard.classList.remove('neon-border');
+            }, 2000);
+        }, 3000);
+        
+        // Параллакс эффект для фона
+        document.addEventListener('mousemove', (e) => {
+            const moveX = (e.clientX - window.innerWidth / 2) * 0.01;
+            const moveY = (e.clientY - window.innerHeight / 2) * 0.01;
+            document.body.style.backgroundPosition = `calc(50% + ${moveX}px) calc(50% + ${moveY}px)`;
+        });
+    </script>
+</body>
+</html>
     '''
     
     return html_content
