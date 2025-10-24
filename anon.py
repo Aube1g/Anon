@@ -196,7 +196,7 @@ def create_anon_link(user_id, title, description):
     return link_id
 
 def save_message(link_id, from_user_id, to_user_id, message_text, message_type='text', file_id=None, file_size=None, file_name=None):
-    message_id = run_query('INSERT INTO messages (link_id, from_user_id, to_user_id, message_text, message_type, file_id, file_size, file_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', 
+    message_id = run_query('INSERT INTO messages (link_id, from_user_id, to_user_id, message_text, message_type, file_id, file_size, file_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', 
                           (link_id, from_user_id, to_user_id, message_text, message_type, file_id, file_size, file_name), commit=True)
     push_db_to_github(f"Save message from {from_user_id} to {to_user_id}")
     return message_id
@@ -320,16 +320,18 @@ def get_conversation_for_user(user_id):
     ''', (user_id, user_id, user_id), fetch="all")
 
 def get_all_users_for_admin():
-    return run_query("SELECT user_id, username, first_name, created_at FROM users ORDER BY created_at DESC", fetch="all")
+    result = run_query("SELECT user_id, username, first_name, created_at FROM users ORDER BY created_at DESC", fetch="all")
+    return result or []
 
 def get_user_links_for_admin(user_id):
-    return run_query('''
+    result = run_query('''
         SELECT l.link_id, l.title, l.description, l.created_at,
                (SELECT COUNT(*) FROM messages m WHERE m.link_id = l.link_id AND m.is_active = 1) as message_count
         FROM links l
         WHERE l.user_id = ? AND l.is_active = 1
         ORDER BY l.created_at DESC
     ''', (user_id,), fetch="all")
+    return result or []
 
 def get_admin_stats():
     stats = {}
@@ -458,8 +460,12 @@ def escape_markdown_v2(text: str) -> str:
     """Экранирует специальные символы для MarkdownV2"""
     if not text: 
         return ""
+    
+    # Преобразуем в строку на случай если пришел None
+    text = str(text)
+    
     escape_chars = r'_*[]()~`>#+-=|{}.!'
-    return re.sub(f'([{re.escape(escape_chars)}])', r'\\\1', str(text))
+    return re.sub(f'([{re.escape(escape_chars)}])', r'\\\1', text)
 
 def format_datetime(dt_string):
     """Форматирует дату-время с точностью до секунд (Красноярское время UTC+7)"""
@@ -480,28 +486,27 @@ def parse_formatting(text):
     if not text:
         return text
     
-    # Экранируем HTML символы
+    # Экранируем HTML символы, но сохраняем наши теги
     text = html.escape(text)
     
-    # Жирный текст: **текст** или __текст__
+    # Восстанавливаем наши теги форматирования
+    text = re.sub(r'&lt;b&gt;(.*?)&lt;/b&gt;', r'<b>\1</b>', text)
+    text = re.sub(r'&lt;i&gt;(.*?)&lt;/i&gt;', r'<i>\1</i>', text)
+    text = re.sub(r'&lt;s&gt;(.*?)&lt;/s&gt;', r'<s>\1</s>', text)
+    text = re.sub(r'&lt;code&gt;(.*?)&lt;/code&gt;', r'<code>\1</code>', text)
+    text = re.sub(r'&lt;spoiler&gt;(.*?)&lt;/spoiler&gt;', r'<spoiler>\1</spoiler>', text)
+    text = re.sub(r'&lt;blockquote&gt;(.*?)&lt;/blockquote&gt;', r'<blockquote>\1</blockquote>', text)
+    
+    # Обрабатываем пользовательское форматирование
     text = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', text)
     text = re.sub(r'__(.*?)__', r'<b>\1</b>', text)
-    
-    # Курсив: *текст* или _текст_
     text = re.sub(r'\*(.*?)\*', r'<i>\1</i>', text)
     text = re.sub(r'_(.*?)_', r'<i>\1</i>', text)
-    
-    # Зачеркивание: ~~текст~~
     text = re.sub(r'~~(.*?)~~', r'<s>\1</s>', text)
-    
-    # Моноширинный (код): `текст`
     text = re.sub(r'`(.*?)`', r'<code>\1</code>', text)
-    
-    # Скрытый текст (спойлер): ||текст||
     text = re.sub(r'\|\|(.*?)\|\|', r'<spoiler>\1</spoiler>', text)
-    
-    # Цитата: >>текст или >>>текст
-    text = re.sub(r'>>>?(.*?)(?=\n|$)', r'<blockquote>\1</blockquote>', text)
+    text = re.sub(r'&gt;&gt;&gt;(.*?)(?=\n|$)', r'<blockquote>\1</blockquote>', text)
+    text = re.sub(r'&gt;&gt;(.*?)(?=\n|$)', r'<blockquote>\1</blockquote>', text)
     
     return text
 
@@ -843,9 +848,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if users:
                     text = "👥 *Управление пользователями*\n\n"
                     for u in users[:15]:
-                        username = f"@{u[1]}" if u[1] else (u[2] or f"ID\\:{u[0]}")
+                        # Безопасное получение username
+                        username = u[1] if u[1] else (u[2] or f"ID:{u[0]}")
+                        username_display = f"@{username}" if u[1] else username
                         created = format_datetime(u[3])
-                        text += f"👤 *{escape_markdown_v2(username)}*\n🆔 `{u[0]}` \\| 📅 `{created}`\n\n"
+                        text += f"👤 *{escape_markdown_v2(username_display)}*\n🆔 `{u[0]}` \\| 📅 `{created}`\n\n"
                     
                     # Добавляем кнопки управления для каждого пользователя
                     keyboard_buttons = []
@@ -977,15 +984,19 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             elif data == "broadcast_send":
                 if context.user_data.get('broadcasting'):
                     message_text = context.user_data.get('broadcast_message', '')
-                    if not message_text.strip():
+                    if not message_text or not message_text.strip():
                         await query.answer("Сообщение не может быть пустым!", show_alert=True)
                         return
                     
-                    context.user_data.pop('broadcasting')
-                    context.user_data.pop('broadcast_message')
+                    context.user_data.pop('broadcasting', None)
+                    context.user_data.pop('broadcast_message', None)
                     
                     # Парсим форматирование
-                    formatted_text = parse_formatting(message_text)
+                    try:
+                        formatted_text = parse_formatting(message_text.strip())
+                    except Exception as e:
+                        logging.error(f"Ошибка форматирования рассылки: {e}")
+                        formatted_text = message_text.strip()
                     
                     users = get_all_users_for_admin()
                     success_count = 0
@@ -1052,8 +1063,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 try:
                     await context.bot.send_message(to_user, notification, parse_mode='MarkdownV2')
                 except Exception as e:
-                    logging.error(f"Failed to send reply notification: {e}")
-                    # Если не удалось отправить уведомление, просто продолжаем
+                    logging.error(f"Failed to send reply notification to {to_user}: {e}")
+                    # Не прерываем выполнение, просто логируем ошибку
                 
                 await update.message.reply_text("✅ *Ответ отправлен\\!*", parse_mode='MarkdownV2', reply_markup=main_keyboard())
             return
