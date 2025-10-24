@@ -542,11 +542,11 @@ def format_datetime(dt_string):
     return krasnoyarsk_time.strftime("%Y-%m-%d %H:%M:%S") + " (Krasnoyarsk)"
 
 def parse_formatting(text):
-    """Парсит форматирование текста для Telegram"""
+    """Простое форматирование текста для Telegram"""
     if not text:
         return text
     
-    # Сначала обрабатываем пользовательское форматирование
+    # Простое форматирование без сложных преобразований
     text = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', text)
     text = re.sub(r'__(.*?)__', r'<b>\1</b>', text)
     text = re.sub(r'\*(.*?)\*', r'<i>\1</i>', text)
@@ -554,48 +554,33 @@ def parse_formatting(text):
     text = re.sub(r'~~(.*?)~~', r'<s>\1</s>', text)
     text = re.sub(r'`(.*?)`', r'<code>\1</code>', text)
     text = re.sub(r'\|\|(.*?)\|\|', r'<spoiler>\1</spoiler>', text)
-    text = re.sub(r'&gt;&gt;(.*?)(?=\n|$)', r'<blockquote>\1</blockquote>', text)
-    text = re.sub(r'&gt;&gt;&gt;(.*?)(?=\n|$)', r'<blockquote>\1</blockquote>', text)
     
-    # Теперь экранируем оставшиеся HTML символы, но сохраняем наши теги
-    # Временная замена наших тегов
-    replacements = {
-        '<b>': '___BOLD_OPEN___',
-        '</b>': '___BOLD_CLOSE___',
-        '<i>': '___ITALIC_OPEN___',
-        '</i>': '___ITALIC_CLOSE___',
-        '<s>': '___STRIKE_OPEN___',
-        '</s>': '___STRIKE_CLOSE___',
-        '<code>': '___CODE_OPEN___',
-        '</code>': '___CODE_CLOSE___',
-        '<spoiler>': '___SPOILER_OPEN___',
-        '</spoiler>': '___SPOILER_CLOSE___',
-        '<blockquote>': '___QUOTE_OPEN___',
-        '</blockquote>': '___QUOTE_CLOSE___'
-    }
+    # Обрабатываем цитаты безопасно
+    text = re.sub(r'>>(.*?)(?=\n|$)', r'<blockquote>\1</blockquote>', text)
+    text = re.sub(r'>>>(.*?)(?=\n|$)', r'<blockquote>\1</blockquote>', text)
     
-    # Заменяем теги на временные маркеры
-    for original, replacement in replacements.items():
-        text = text.replace(original, replacement)
+    # Экранируем только опасные символы, но сохраняем теги
+    text = text.replace('<', '&lt;').replace('>', '&gt;')
     
-    # Экранируем HTML
-    text = html.escape(text)
-    
-    # Восстанавливаем наши теги
-    for original, replacement in replacements.items():
-        text = text.replace(replacement, original)
+    # Восстанавливаем безопасные теги Telegram
+    text = text.replace('&lt;b&gt;', '<b>').replace('&lt;/b&gt;', '</b>')
+    text = text.replace('&lt;i&gt;', '<i>').replace('&lt;/i&gt;', '</i>')
+    text = text.replace('&lt;s&gt;', '<s>').replace('&lt;/s&gt;', '</s>')
+    text = text.replace('&lt;code&gt;', '<code>').replace('&lt;/code&gt;', '</code>')
+    text = text.replace('&lt;spoiler&gt;', '<spoiler>').replace('&lt;/spoiler&gt;', '</spoiler>')
+    text = text.replace('&lt;blockquote&gt;', '<blockquote>').replace('&lt;/blockquote&gt;', '</blockquote>')
     
     return text
 
 def escape_html_safe(text):
-    """Безопасное экранирование HTML с сохранением форматирования"""
+    """Безопасное экранирование HTML"""
     if not text:
         return ""
     
-    # Сначала экранируем все
+    # Простое экранирование
     text = html.escape(text)
     
-    # Затем восстанавливаем форматирование
+    # Восстанавливаем форматирование
     text = re.sub(r'&lt;b&gt;(.*?)&lt;/b&gt;', r'<b>\1</b>', text)
     text = re.sub(r'&lt;i&gt;(.*?)&lt;/i&gt;', r'<i>\1</i>', text)
     text = re.sub(r'&lt;s&gt;(.*?)&lt;/s&gt;', r'<s>\1</s>', text)
@@ -1046,12 +1031,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await query.edit_message_text(
                     "📢 *Режим рассылки*\n\n"
                     "💡 *Доступные форматы:*\n"
-                    "• **Жирный** текст: **текст** или __текст__\n"
-                    "• *Курсив*: *текст* или _текст_\n"
-                    "• ~~Зачеркивание~~: ~~текст~~\n"
-                    "• Скрытый текст: ||текст||\n"
-                    "• `Моноширинный`: `текст`\n"
-                    "• Цитата: >>текст\n\n"
+                    "• **Жирный** текст\n" 
+                    "• *Курсив* текст\n"
+                    "• ~~Зачеркивание~~\n"
+                    "• Скрытый текст\n"
+                    "• `Моноширинный`\n"
+                    "• Цитата\n\n"
                     "Введите сообщение для рассылки:",
                     parse_mode='MarkdownV2', 
                     reply_markup=broadcast_formatting_keyboard()
@@ -1066,7 +1051,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     
                     format_examples = {
                         'bold': '**жирный текст**',
-                        'italic': '*курсив*',
+                        'italic': '*курсив*', 
                         'strike': '~~зачеркнутый~~',
                         'spoiler': '||скрытый текст||',
                         'code': '`моноширинный`',
@@ -1077,13 +1062,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     new_text = current_text + example
                     context.user_data['broadcast_message'] = new_text
                     
-                    # Показываем предпросмотр с HTML разметкой
-                    preview_text = parse_formatting(new_text)
+                    # Простой предпросмотр без сложного форматирования
+                    preview_text = new_text
                     
                     await query.edit_message_text(
                         f"📢 *Сообщение для рассылки:*\n\n{preview_text}\n\n"
                         "Используйте кнопки для добавления форматирования или введите текст:",
-                        parse_mode='HTML',
+                        parse_mode=None,  # Отключаем форматирование для предпросмотра
                         reply_markup=broadcast_formatting_keyboard()
                     )
                 return
@@ -1098,7 +1083,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     context.user_data.pop('broadcasting', None)
                     context.user_data.pop('broadcast_message', None)
                     
-                    # Парсим форматирование
+                    # Простое форматирование для рассылки
                     try:
                         formatted_text = parse_formatting(message_text.strip())
                     except Exception as e:
@@ -1119,7 +1104,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                 parse_mode='HTML'
                             )
                             success_count += 1
-                            # Небольшая задержка чтобы не превысить лимиты Telegram
                             await asyncio.sleep(0.1)
                         except Exception as e:
                             logging.error(f"Ошибка отправки пользователю {u[0]}: {e}")
@@ -1163,7 +1147,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 # Сохраняем ответ
                 save_reply(message_id, user.id, text)
                 
-                # Отправляем уведомление получателю
+                # Отправляем уведомление получателю (простой текст)
                 msg_text, msg_type, file_name, created, from_user, from_name, to_user, to_name, link_title, link_id = message_info
                 
                 notification = f"💬 *Новый ответ на ваше сообщение*\n\n{text}"
@@ -1171,7 +1155,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await context.bot.send_message(to_user, notification, parse_mode='MarkdownV2')
                 except Exception as e:
                     logging.error(f"Failed to send reply notification to {to_user}: {e}")
-                    # Не прерываем выполнение, просто логируем ошибку
                 
                 await update.message.reply_text("✅ *Ответ отправлен\\!*", parse_mode='MarkdownV2', reply_markup=main_keyboard())
             return
