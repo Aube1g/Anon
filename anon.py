@@ -196,8 +196,11 @@ def create_anon_link(user_id, title, description):
     return link_id
 
 def save_message(link_id, from_user_id, to_user_id, message_text, message_type='text', file_id=None, file_size=None, file_name=None):
-    message_id = run_query('INSERT INTO messages (link_id, from_user_id, to_user_id, message_text, message_type, file_id, file_size, file_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', 
-                          (link_id, from_user_id, to_user_id, message_text, message_type, file_id, file_size, file_name), commit=True)
+    message_id = run_query(
+        'INSERT INTO messages (link_id, from_user_id, to_user_id, message_text, message_type, file_id, file_size, file_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', 
+        (link_id, from_user_id, to_user_id, message_text, message_type, file_id, file_size, file_name), 
+        commit=True
+    )
     push_db_to_github(f"Save message from {from_user_id} to {to_user_id}")
     return message_id
 
@@ -454,15 +457,64 @@ def get_all_data_for_html():
     
     return data
 
+def get_all_conversations_for_admin():
+    """Получает все переписки для админки"""
+    return run_query('''
+        SELECT l.link_id, l.title, l.description, l.created_at,
+               u.username, u.first_name, u.user_id,
+               COUNT(m.message_id) as message_count,
+               MAX(m.created_at) as last_activity
+        FROM links l
+        LEFT JOIN users u ON l.user_id = u.user_id
+        LEFT JOIN messages m ON l.link_id = m.link_id AND m.is_active = 1
+        WHERE l.is_active = 1
+        GROUP BY l.link_id
+        ORDER BY last_activity DESC
+    ''', fetch="all") or []
+
+def get_detailed_messages_for_admin():
+    """Получает детальную информацию о всех сообщениях"""
+    return run_query('''
+        SELECT m.message_id, m.message_text, m.message_type, m.file_size, m.file_name, m.created_at,
+               u_from.username as from_username, u_from.first_name as from_first_name, u_from.user_id as from_user_id,
+               u_to.username as to_username, u_to.first_name as to_first_name, u_to.user_id as to_user_id,
+               l.title as link_title, l.link_id,
+               (SELECT COUNT(*) FROM replies r WHERE r.message_id = m.message_id AND r.is_active = 1) as reply_count
+        FROM messages m
+        LEFT JOIN users u_from ON m.from_user_id = u_from.user_id
+        LEFT JOIN users u_to ON m.to_user_id = u_to.user_id
+        LEFT JOIN links l ON m.link_id = l.link_id
+        WHERE m.is_active = 1
+        ORDER BY m.created_at DESC
+    ''', fetch="all") or []
+
 # --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
+
+def safe_int(value, default=0):
+    """Безопасное преобразование в int"""
+    try:
+        if value is None:
+            return default
+        return int(value)
+    except (ValueError, TypeError):
+        return default
+
+def safe_str(value, default=""):
+    """Безопасное преобразование в строку"""
+    if value is None:
+        return default
+    return str(value)
 
 def escape_markdown_v2(text: str) -> str:
     """Экранирует специальные символы для MarkdownV2"""
-    if not text: 
+    if text is None:
         return ""
     
-    # Преобразуем в строку на случай если пришел None
+    # Преобразуем в строку на случай если пришел не строковый тип
     text = str(text)
+    
+    if not text.strip():
+        return text
     
     escape_chars = r'_*[]()~`>#+-=|{}.!'
     return re.sub(f'([{re.escape(escape_chars)}])', r'\\\1', text)
@@ -486,18 +538,7 @@ def parse_formatting(text):
     if not text:
         return text
     
-    # Экранируем HTML символы, но сохраняем наши теги
-    text = html.escape(text)
-    
-    # Восстанавливаем наши теги форматирования
-    text = re.sub(r'&lt;b&gt;(.*?)&lt;/b&gt;', r'<b>\1</b>', text)
-    text = re.sub(r'&lt;i&gt;(.*?)&lt;/i&gt;', r'<i>\1</i>', text)
-    text = re.sub(r'&lt;s&gt;(.*?)&lt;/s&gt;', r'<s>\1</s>', text)
-    text = re.sub(r'&lt;code&gt;(.*?)&lt;/code&gt;', r'<code>\1</code>', text)
-    text = re.sub(r'&lt;spoiler&gt;(.*?)&lt;/spoiler&gt;', r'<spoiler>\1</spoiler>', text)
-    text = re.sub(r'&lt;blockquote&gt;(.*?)&lt;/blockquote&gt;', r'<blockquote>\1</blockquote>', text)
-    
-    # Обрабатываем пользовательское форматирование
+    # Сначала обрабатываем пользовательское форматирование
     text = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', text)
     text = re.sub(r'__(.*?)__', r'<b>\1</b>', text)
     text = re.sub(r'\*(.*?)\*', r'<i>\1</i>', text)
@@ -505,8 +546,40 @@ def parse_formatting(text):
     text = re.sub(r'~~(.*?)~~', r'<s>\1</s>', text)
     text = re.sub(r'`(.*?)`', r'<code>\1</code>', text)
     text = re.sub(r'\|\|(.*?)\|\|', r'<spoiler>\1</spoiler>', text)
-    text = re.sub(r'&gt;&gt;&gt;(.*?)(?=\n|$)', r'<blockquote>\1</blockquote>', text)
     text = re.sub(r'&gt;&gt;(.*?)(?=\n|$)', r'<blockquote>\1</blockquote>', text)
+    text = re.sub(r'&gt;&gt;&gt;(.*?)(?=\n|$)', r'<blockquote>\1</blockquote>', text)
+    
+    # Теперь экранируем оставшиеся HTML символы, но сохраняем наши теги
+    # Временная замена наших тегов
+    text = text.replace('<b>', '___BOLD_OPEN___')
+    text = text.replace('</b>', '___BOLD_CLOSE___')
+    text = text.replace('<i>', '___ITALIC_OPEN___')
+    text = text.replace('</i>', '___ITALIC_CLOSE___')
+    text = text.replace('<s>', '___STRIKE_OPEN___')
+    text = text.replace('</s>', '___STRIKE_CLOSE___')
+    text = text.replace('<code>', '___CODE_OPEN___')
+    text = text.replace('</code>', '___CODE_CLOSE___')
+    text = text.replace('<spoiler>', '___SPOILER_OPEN___')
+    text = text.replace('</spoiler>', '___SPOILER_CLOSE___')
+    text = text.replace('<blockquote>', '___QUOTE_OPEN___')
+    text = text.replace('</blockquote>', '___QUOTE_CLOSE___')
+    
+    # Экранируем HTML
+    text = html.escape(text)
+    
+    # Восстанавливаем наши теги
+    text = text.replace('___BOLD_OPEN___', '<b>')
+    text = text.replace('___BOLD_CLOSE___', '</b>')
+    text = text.replace('___ITALIC_OPEN___', '<i>')
+    text = text.replace('___ITALIC_CLOSE___', '</i>')
+    text = text.replace('___STRIKE_OPEN___', '<s>')
+    text = text.replace('___STRIKE_CLOSE___', '</s>')
+    text = text.replace('___CODE_OPEN___', '<code>')
+    text = text.replace('___CODE_CLOSE___', '</code>')
+    text = text.replace('___SPOILER_OPEN___', '<spoiler>')
+    text = text.replace('___SPOILER_CLOSE___', '</spoiler>')
+    text = text.replace('___QUOTE_OPEN___', '<blockquote>')
+    text = text.replace('___QUOTE_CLOSE___', '</blockquote>')
     
     return text
 
@@ -548,6 +621,8 @@ def admin_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📊 Статистика", callback_data="admin_stats")],
         [InlineKeyboardButton("👥 Управление пользователями", callback_data="admin_users")],
+        [InlineKeyboardButton("💬 Все переписки", callback_data="admin_conversations")],
+        [InlineKeyboardButton("📨 Детали сообщений", callback_data="admin_messages")],
         [InlineKeyboardButton("🎨 HTML Отчет", callback_data="admin_html_report")],
         [InlineKeyboardButton("📢 Оповещение", callback_data="admin_broadcast")],
         [InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]
@@ -595,6 +670,18 @@ def broadcast_formatting_keyboard():
             InlineKeyboardButton("✅ Отправить", callback_data="broadcast_send"),
             InlineKeyboardButton("❌ Отмена", callback_data="admin_panel")
         ]
+    ])
+
+def conversations_keyboard():
+    """Клавиатура для управления переписками"""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔙 Назад", callback_data="admin_panel")]
+    ])
+
+def messages_management_keyboard():
+    """Клавиатура для управления сообщениями"""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔙 Назад", callback_data="admin_panel")]
     ])
 
 # --- ОСНОВНЫЕ ОБРАБОТЧИКИ ---
@@ -731,72 +818,94 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # Ответ на сообщение
         elif data.startswith("reply_"):
-            message_id = int(data.replace("reply_", ""))
-            context.user_data['replying_to'] = message_id
-            await query.edit_message_text(
-                "💬 *Режим ответа*\n\nВведите ваш ответ на это сообщение:",
-                parse_mode='MarkdownV2',
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data="my_messages")]])
-            )
+            try:
+                message_id_str = data.replace("reply_", "")
+                if message_id_str and message_id_str != "None":
+                    message_id = safe_int(message_id_str)
+                    context.user_data['replying_to'] = message_id
+                    await query.edit_message_text(
+                        "💬 *Режим ответа*\n\nВведите ваш ответ на это сообщение:",
+                        parse_mode='MarkdownV2',
+                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data="my_messages")]])
+                    )
+                else:
+                    await query.answer("Ошибка: сообщение не найдено", show_alert=True)
+            except (ValueError, TypeError) as e:
+                logging.error(f"Ошибка преобразования message_id: {e}")
+                await query.answer("Ошибка: неверный идентификатор сообщения", show_alert=True)
             return
         
         # Управление удалением
         elif data.startswith("confirm_delete_link_"):
             link_id = data.replace("confirm_delete_link_", "")
-            link_info = get_link_info(link_id)
-            
-            if link_info:
-                text = f"🗑️ *Подтверждение удаления ссылки*\n\n"
-                text += f"📝 *Название:* {escape_markdown_v2(link_info[2])}\n"
-                text += f"📋 *Описание:* {escape_markdown_v2(link_info[3])}\n\n"
-                text += "❓ *Вы уверены, что хотите удалить эту ссылку?*\n"
-                text += "⚠️ *Все сообщения через эту ссылку также будут удалены\\!*"
+            if link_id and link_id != "None":
+                link_info = get_link_info(link_id)
                 
-                await query.edit_message_text(text, parse_mode='MarkdownV2', 
-                                           reply_markup=delete_confirmation_keyboard("link", link_id))
+                if link_info:
+                    text = f"🗑️ *Подтверждение удаления ссылки*\n\n"
+                    text += f"📝 *Название:* {escape_markdown_v2(link_info[2])}\n"
+                    text += f"📋 *Описание:* {escape_markdown_v2(link_info[3])}\n\n"
+                    text += "❓ *Вы уверены, что хотите удалить эту ссылку?*\n"
+                    text += "⚠️ *Все сообщения через эту ссылку также будут удалены\\!*"
+                    
+                    await query.edit_message_text(text, parse_mode='MarkdownV2', 
+                                               reply_markup=delete_confirmation_keyboard("link", link_id))
+            else:
+                await query.answer("Ошибка: ссылка не найдена", show_alert=True)
             return
         
         elif data.startswith("confirm_delete_message_"):
-            message_id = int(data.replace("confirm_delete_message_", ""))
-            message_info = get_message_info(message_id)
-            
-            if message_info:
-                msg_text, msg_type, file_name, created, from_user, from_name, to_user, to_name, link_title, link_id = message_info
+            message_id_str = data.replace("confirm_delete_message_", "")
+            if message_id_str and message_id_str != "None":
+                message_id = safe_int(message_id_str)
+                message_info = get_message_info(message_id)
                 
-                text = f"🗑️ *Подтверждение удаления сообщения*\n\n"
-                text += f"📝 *Сообщение:*\n`{msg_text if msg_text else f'Медиафайл: {msg_type}'}`\n\n"
-                text += f"❓ *Вы уверены, что хотите удалить это сообщение?*"
-                
-                await query.edit_message_text(text, parse_mode='MarkdownV2', 
-                                           reply_markup=delete_confirmation_keyboard("message", message_id))
+                if message_info:
+                    msg_text, msg_type, file_name, created, from_user, from_name, to_user, to_name, link_title, link_id = message_info
+                    
+                    text = f"🗑️ *Подтверждение удаления сообщения*\n\n"
+                    text += f"📝 *Сообщение:*\n`{msg_text if msg_text else f'Медиафайл: {msg_type}'}`\n\n"
+                    text += f"❓ *Вы уверены, что хотите удалить это сообщение?*"
+                    
+                    await query.edit_message_text(text, parse_mode='MarkdownV2', 
+                                               reply_markup=delete_confirmation_keyboard("message", message_id))
+            else:
+                await query.answer("Ошибка: сообщение не найдено", show_alert=True)
             return
         
         elif data.startswith("delete_link_"):
             link_id = data.replace("delete_link_", "")
-            success = delete_link_completely(link_id)
-            
-            if success:
-                await query.edit_message_text("✅ *Ссылка и все связанные сообщения успешно удалены\\!*", 
-                                           parse_mode='MarkdownV2', 
-                                           reply_markup=main_keyboard())
+            if link_id and link_id != "None":
+                success = delete_link_completely(link_id)
+                
+                if success:
+                    await query.edit_message_text("✅ *Ссылка и все связанные сообщения успешно удалены\\!*", 
+                                               parse_mode='MarkdownV2', 
+                                               reply_markup=main_keyboard())
+                else:
+                    await query.edit_message_text("❌ *Ошибка при удалении ссылки*", 
+                                               parse_mode='MarkdownV2', 
+                                               reply_markup=main_keyboard())
             else:
-                await query.edit_message_text("❌ *Ошибка при удалении ссылки*", 
-                                           parse_mode='MarkdownV2', 
-                                           reply_markup=main_keyboard())
+                await query.answer("Ошибка: ссылка не найдена", show_alert=True)
             return
         
         elif data.startswith("delete_message_"):
-            message_id = int(data.replace("delete_message_", ""))
-            success = delete_message_completely(message_id)
-            
-            if success:
-                await query.edit_message_text("✅ *Сообщение успешно удалено\\!*", 
-                                           parse_mode='MarkdownV2', 
-                                           reply_markup=main_keyboard())
+            message_id_str = data.replace("delete_message_", "")
+            if message_id_str and message_id_str != "None":
+                message_id = safe_int(message_id_str)
+                success = delete_message_completely(message_id)
+                
+                if success:
+                    await query.edit_message_text("✅ *Сообщение успешно удалено\\!*", 
+                                               parse_mode='MarkdownV2', 
+                                               reply_markup=main_keyboard())
+                else:
+                    await query.edit_message_text("❌ *Ошибка при удалении сообщения*", 
+                                               parse_mode='MarkdownV2', 
+                                               reply_markup=main_keyboard())
             else:
-                await query.edit_message_text("❌ *Ошибка при удалении сообщения*", 
-                                           parse_mode='MarkdownV2', 
-                                           reply_markup=main_keyboard())
+                await query.answer("Ошибка: сообщение не найдено", show_alert=True)
             return
         
         elif data == "cancel_delete":
@@ -872,45 +981,53 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
             
             elif data.startswith("admin_user_links_"):
-                user_id = int(data.replace("admin_user_links_", ""))
-                user_links = get_user_links_for_admin(user_id)
-                
-                if user_links:
-                    text = f"🔗 *Ссылки пользователя {user_id}:*\n\n"
-                    for link in user_links:
-                        created = format_datetime(link[3])
-                        text += f"📝 *{escape_markdown_v2(link[1])}*\n📋 {escape_markdown_v2(link[2])}\n🕒 `{created}` \\| 💬 Сообщений\\: {link[4]}\n\n"
+                user_id_str = data.replace("admin_user_links_", "")
+                if user_id_str and user_id_str != "None":
+                    user_id = safe_int(user_id_str)
+                    user_links = get_user_links_for_admin(user_id)
                     
-                    keyboard = InlineKeyboardMarkup([
-                        [InlineKeyboardButton("👁️ Посмотреть переписку", callback_data=f"admin_view_conversation_{user_id}")],
-                        [InlineKeyboardButton("🔙 Назад", callback_data="admin_users")]
-                    ])
-                    
-                    await query.edit_message_text(text, parse_mode='MarkdownV2', reply_markup=keyboard)
+                    if user_links:
+                        text = f"🔗 *Ссылки пользователя {user_id}:*\n\n"
+                        for link in user_links:
+                            created = format_datetime(link[3])
+                            text += f"📝 *{escape_markdown_v2(link[1])}*\n📋 {escape_markdown_v2(link[2])}\n🕒 `{created}` \\| 💬 Сообщений\\: {link[4]}\n\n"
+                        
+                        keyboard = InlineKeyboardMarkup([
+                            [InlineKeyboardButton("👁️ Посмотреть переписку", callback_data=f"admin_view_conversation_{user_id}")],
+                            [InlineKeyboardButton("🔙 Назад", callback_data="admin_users")]
+                        ])
+                        
+                        await query.edit_message_text(text, parse_mode='MarkdownV2', reply_markup=keyboard)
+                    else:
+                        await query.edit_message_text("У пользователя нет ссылок\\.", parse_mode='MarkdownV2', reply_markup=user_management_keyboard(user_id))
                 else:
-                    await query.edit_message_text("У пользователя нет ссылок\\.", parse_mode='MarkdownV2', reply_markup=user_management_keyboard(user_id))
+                    await query.answer("Ошибка: пользователь не найден", show_alert=True)
                 return
             
             elif data.startswith("admin_view_conversation_"):
-                user_id = int(data.replace("admin_view_conversation_", ""))
-                await query.edit_message_text("🔄 *Генерация отчета переписки\\.\\.\\.*", parse_mode='MarkdownV2')
-                
-                # Генерируем HTML отчет переписки
-                html_content = generate_conversation_report(user_id)
-                
-                report_path = f"/tmp/conversation_{user_id}.html"
-                with open(report_path, 'w', encoding='utf-8') as f:
-                    f.write(html_content)
-                
-                with open(report_path, 'rb') as f:
-                    await query.message.reply_document(
-                        document=f,
-                        filename=f"conversation_{user_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html",
-                        caption=f"💬 *Переписка пользователя {user_id}*",
-                        parse_mode='MarkdownV2'
-                    )
-                
-                await query.edit_message_text("✅ *Отчет переписки отправлен\\!*", parse_mode='MarkdownV2', reply_markup=user_management_keyboard(user_id))
+                user_id_str = data.replace("admin_view_conversation_", "")
+                if user_id_str and user_id_str != "None":
+                    user_id = safe_int(user_id_str)
+                    await query.edit_message_text("🔄 *Генерация отчета переписки\\.\\.\\.*", parse_mode='MarkdownV2')
+                    
+                    # Генерируем HTML отчет переписки
+                    html_content = generate_conversation_report(user_id)
+                    
+                    report_path = f"/tmp/conversation_{user_id}.html"
+                    with open(report_path, 'w', encoding='utf-8') as f:
+                        f.write(html_content)
+                    
+                    with open(report_path, 'rb') as f:
+                        await query.message.reply_document(
+                            document=f,
+                            filename=f"conversation_{user_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html",
+                            caption=f"💬 *Переписка пользователя {user_id}*",
+                            parse_mode='MarkdownV2'
+                        )
+                    
+                    await query.edit_message_text("✅ *Отчет переписки отправлен\\!*", parse_mode='MarkdownV2', reply_markup=user_management_keyboard(user_id))
+                else:
+                    await query.answer("Ошибка: пользователь не найден", show_alert=True)
                 return
             
             elif data == "admin_html_report":
@@ -931,6 +1048,46 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
                 
                 await query.edit_message_text("✅ *HTML отчет сгенерирован и отправлен\\!*", parse_mode='MarkdownV2', reply_markup=admin_keyboard())
+                return
+
+            elif data == "admin_conversations":
+                await query.edit_message_text("🔄 *Загрузка всех переписок\\.\\.\\.*", parse_mode='MarkdownV2')
+                
+                html_content = generate_conversations_report()
+                
+                report_path = "/tmp/all_conversations.html"
+                with open(report_path, 'w', encoding='utf-8') as f:
+                    f.write(html_content)
+                
+                with open(report_path, 'rb') as f:
+                    await query.message.reply_document(
+                        document=f,
+                        filename=f"all_conversations_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html",
+                        caption="💬 *Все переписки и ссылки*",
+                        parse_mode='MarkdownV2'
+                    )
+                
+                await query.edit_message_text("✅ *Отчет всех переписок отправлен\\!*", parse_mode='MarkdownV2', reply_markup=admin_keyboard())
+                return
+
+            elif data == "admin_messages":
+                await query.edit_message_text("🔄 *Загрузка детальной информации о сообщениях\\.\\.\\.*", parse_mode='MarkdownV2')
+                
+                html_content = generate_detailed_messages_report()
+                
+                report_path = "/tmp/detailed_messages.html"
+                with open(report_path, 'w', encoding='utf-8') as f:
+                    f.write(html_content)
+                
+                with open(report_path, 'rb') as f:
+                    await query.message.reply_document(
+                        document=f,
+                        filename=f"detailed_messages_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html",
+                        caption="📨 *Детальная информация о всех сообщениях*",
+                        parse_mode='MarkdownV2'
+                    )
+                
+                await query.edit_message_text("✅ *Детальный отчет сообщений отправлен\\!*", parse_mode='MarkdownV2', reply_markup=admin_keyboard())
                 return
             
             elif data == "admin_broadcast":
@@ -1249,6 +1406,12 @@ def generate_conversation_report(user_id):
                 margin: 15px 0;
                 border-radius: 15px;
                 border-left: 4px solid #b84dff;
+                transition: all 0.3s ease;
+            }}
+            
+            .message:hover {{
+                transform: translateX(10px);
+                background: rgba(255,255,255,0.15);
             }}
             
             .message.reply {{
@@ -1273,6 +1436,14 @@ def generate_conversation_report(user_id):
                 color: #a0a0ff;
                 font-size: 0.9em;
             }}
+            
+            .media-info {{
+                background: rgba(184, 77, 255, 0.1);
+                padding: 10px;
+                border-radius: 8px;
+                margin: 10px 0;
+                border-left: 3px solid #b84dff;
+            }}
         </style>
     </head>
     <body>
@@ -1289,6 +1460,11 @@ def generate_conversation_report(user_id):
     if conversations:
         for conv in conversations:
             if conv[16] == 'message':  # Обычное сообщение
+                media_info = ""
+                if conv[2] and conv[2] != 'text':
+                    file_size = f" ({conv[4] // 1024} KB)" if conv[4] else ""
+                    media_info = f'<div class="media-info">📁 Тип: {conv[2].upper()}{file_size}<br>Файл: {conv[5] or "Без названия"}</div>'
+                
                 html_content += f'''
                 <div class="message">
                     <div class="message-header">
@@ -1297,6 +1473,7 @@ def generate_conversation_report(user_id):
                     </div>
                     <div class="message-content">
                         {html.escape(conv[1]) if conv[1] else f'Медиафайл: {conv[2]}'}
+                        {media_info}
                     </div>
                 </div>
                 '''
@@ -1316,6 +1493,499 @@ def generate_conversation_report(user_id):
         html_content += '<div class="message"><div class="message-content">Нет данных о переписке</div></div>'
     
     html_content += '''
+            </div>
+        </div>
+    </body>
+    </html>
+    '''
+    
+    return html_content
+
+def generate_conversations_report():
+    """Генерирует HTML отчет всех переписок"""
+    conversations = get_all_conversations_for_admin()
+    
+    html_content = f'''
+    <!DOCTYPE html>
+    <html lang="ru">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>💬 Все переписки и ссылки</title>
+        <link href="https://fonts.googleapis.com/css2?family=Rubik:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+        <style>
+            * {{
+                margin: 0;
+                padding: 0;
+                box-sizing: border-box;
+                -webkit-tap-highlight-color: rgba(184, 77, 255, 0.3);
+            }}
+            
+            ::selection {{
+                background: rgba(184, 77, 255, 0.3);
+                color: #ffffff;
+                border-radius: 4px;
+            }}
+            
+            body {{
+                font-family: 'Rubik', sans-serif;
+                background: linear-gradient(135deg, #0f0829 0%, #1a1a2e 50%, #16213e 100%);
+                color: #e8e6f3;
+                min-height: 100vh;
+                padding: 40px 20px;
+            }}
+            
+            .container {{
+                max-width: 1200px;
+                margin: 0 auto;
+            }}
+            
+            .header {{
+                text-align: center;
+                margin-bottom: 40px;
+            }}
+            
+            .title {{
+                font-weight: 900;
+                font-size: 3em;
+                background: linear-gradient(135deg, #b84dff 0%, #6c43ff 50%, #ff47d6 100%);
+                -webkit-background-clip: text;
+                -webkit-text-fill-color: transparent;
+                background-clip: text;
+                margin-bottom: 15px;
+                text-transform: uppercase;
+                letter-spacing: 2px;
+            }}
+            
+            .conversation-grid {{
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+                gap: 25px;
+                margin-bottom: 40px;
+            }}
+            
+            .conversation-card {{
+                background: linear-gradient(135deg, rgba(255, 255, 255, 0.1) 0%, rgba(255, 255, 255, 0.05) 100%);
+                backdrop-filter: blur(15px);
+                padding: 25px;
+                border-radius: 20px;
+                border: 1px solid rgba(255, 255, 255, 0.1);
+                transition: all 0.3s ease;
+                position: relative;
+                overflow: hidden;
+            }}
+            
+            .conversation-card:hover {{
+                transform: translateY(-8px) scale(1.02);
+                box-shadow: 0 15px 35px rgba(0, 0, 0, 0.4);
+                border-color: rgba(184, 77, 255, 0.3);
+            }}
+            
+            .conversation-card::before {{
+                content: '';
+                position: absolute;
+                top: 0;
+                left: 0;
+                right: 0;
+                height: 3px;
+                background: linear-gradient(90deg, #b84dff, #6c43ff, #ff47d6);
+            }}
+            
+            .link-title {{
+                font-weight: 800;
+                font-size: 1.3em;
+                color: #ffd700;
+                margin-bottom: 10px;
+            }}
+            
+            .link-description {{
+                color: #e0e0ff;
+                margin-bottom: 15px;
+                line-height: 1.4;
+            }}
+            
+            .link-info {{
+                display: flex;
+                justify-content: space-between;
+                margin-bottom: 10px;
+                font-size: 0.9em;
+            }}
+            
+            .link-owner {{
+                color: #a78bfa;
+                font-weight: 600;
+            }}
+            
+            .message-count {{
+                background: linear-gradient(135deg, #ffd700 0%, #ff6b6b 50%, #b84dff 100%);
+                -webkit-background-clip: text;
+                -webkit-text-fill-color: transparent;
+                background-clip: text;
+                font-weight: 800;
+                font-size: 1.1em;
+            }}
+            
+            .timestamp {{
+                color: #a0a0ff;
+                font-size: 0.8em;
+            }}
+            
+            .link-id {{
+                background: rgba(255, 255, 255, 0.1);
+                padding: 5px 10px;
+                border-radius: 8px;
+                font-family: monospace;
+                font-size: 0.8em;
+                margin-top: 10px;
+                display: inline-block;
+            }}
+            
+            .footer {{
+                text-align: center;
+                margin-top: 50px;
+                padding: 30px;
+                background: linear-gradient(135deg, rgba(184, 77, 255, 0.1) 0%, rgba(108, 67, 255, 0.1) 100%);
+                border-radius: 20px;
+                border: 1px solid rgba(255, 255, 255, 0.1);
+            }}
+            
+            .footer-text {{
+                font-family: 'Rubik', sans-serif;
+                font-weight: 800;
+                font-size: 1.1em;
+                color: #ffd700;
+                letter-spacing: 2px;
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <h1 class="title">💬 ВСЕ ПЕРЕПИСКИ И ССЫЛКИ</h1>
+                <p style="color: #a78bfa; font-size: 1.2em; margin-bottom: 10px;">Полный обзор всех активных ссылок и их переписок</p>
+                <p style="color: #a0a0ff;">Сгенерирован: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")} (Krasnoyarsk)</p>
+            </div>
+            
+            <div class="conversation-grid">
+    '''
+    
+    if conversations:
+        for conv in conversations:
+            owner = f"@{conv[4]}" if conv[4] else (html.escape(conv[5]) if conv[5] else f"ID:{conv[6]}")
+            last_activity = format_datetime(conv[7]) if conv[7] else "Нет активности"
+            
+            html_content += f'''
+                <div class="conversation-card">
+                    <div class="link-title">{html.escape(conv[1])}</div>
+                    <div class="link-description">{html.escape(conv[2])}</div>
+                    <div class="link-info">
+                        <span class="link-owner">👤 {owner}</span>
+                        <span class="message-count">💬 {conv[3]} сообщ.</span>
+                    </div>
+                    <div class="timestamp">🕒 Создана: {format_datetime(conv[3])}</div>
+                    <div class="timestamp">📅 Активность: {last_activity}</div>
+                    <div class="link-id">🔗 ID: {conv[0]}</div>
+                </div>
+            '''
+    else:
+        html_content += '<div class="conversation-card"><div class="link-title">Нет активных переписок</div></div>'
+    
+    html_content += '''
+            </div>
+            
+            <div class="footer">
+                <div class="footer-text">
+                    🟣 АНОНИМНЫЙ Бот | СИСТЕМА УПРАВЛЕНИЯ ПЕРЕПИСКАМИ
+                </div>
+            </div>
+        </div>
+    </body>
+    </html>
+    '''
+    
+    return html_content
+
+def generate_detailed_messages_report():
+    """Генерирует детальный HTML отчет всех сообщений"""
+    messages = get_detailed_messages_for_admin()
+    
+    html_content = f'''
+    <!DOCTYPE html>
+    <html lang="ru">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>📨 Детальная информация о сообщениях</title>
+        <link href="https://fonts.googleapis.com/css2?family=Rubik:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+        <style>
+            * {{
+                margin: 0;
+                padding: 0;
+                box-sizing: border-box;
+                -webkit-tap-highlight-color: rgba(184, 77, 255, 0.3);
+            }}
+            
+            ::selection {{
+                background: rgba(184, 77, 255, 0.3);
+                color: #ffffff;
+                border-radius: 4px;
+            }}
+            
+            body {{
+                font-family: 'Rubik', sans-serif;
+                background: linear-gradient(135deg, #0f0829 0%, #1a1a2e 50%, #16213e 100%);
+                color: #e8e6f3;
+                min-height: 100vh;
+                padding: 40px 20px;
+            }}
+            
+            .container {{
+                max-width: 1400px;
+                margin: 0 auto;
+            }}
+            
+            .header {{
+                text-align: center;
+                margin-bottom: 40px;
+            }}
+            
+            .title {{
+                font-weight: 900;
+                font-size: 3em;
+                background: linear-gradient(135deg, #b84dff 0%, #6c43ff 50%, #ff47d6 100%);
+                -webkit-background-clip: text;
+                -webkit-text-fill-color: transparent;
+                background-clip: text;
+                margin-bottom: 15px;
+                text-transform: uppercase;
+                letter-spacing: 2px;
+            }}
+            
+            .message-card {{
+                background: linear-gradient(135deg, rgba(255, 255, 255, 0.08) 0%, rgba(255, 255, 255, 0.03) 100%);
+                backdrop-filter: blur(15px);
+                padding: 25px;
+                border-radius: 20px;
+                margin-bottom: 20px;
+                border: 1px solid rgba(255, 255, 255, 0.1);
+                transition: all 0.3s ease;
+                position: relative;
+                overflow: hidden;
+            }}
+            
+            .message-card:hover {{
+                transform: translateX(10px);
+                background: rgba(255, 255, 255, 0.12);
+                border-color: rgba(184, 77, 255, 0.3);
+            }}
+            
+            .message-card::before {{
+                content: '';
+                position: absolute;
+                top: 0;
+                left: 0;
+                right: 0;
+                height: 3px;
+                background: linear-gradient(90deg, #b84dff, #6c43ff, #ff47d6);
+            }}
+            
+            .message-header {{
+                display: flex;
+                justify-content: space-between;
+                align-items: flex-start;
+                margin-bottom: 15px;
+                flex-wrap: wrap;
+                gap: 10px;
+            }}
+            
+            .message-type {{
+                background: linear-gradient(135deg, #ffd700 0%, #ff6b6b 50%, #b84dff 100%);
+                -webkit-background-clip: text;
+                -webkit-text-fill-color: transparent;
+                background-clip: text;
+                font-weight: 800;
+                font-size: 1.1em;
+                text-transform: uppercase;
+            }}
+            
+            .message-content {{
+                color: #e0e0ff;
+                line-height: 1.5;
+                margin-bottom: 15px;
+                background: rgba(255, 255, 255, 0.05);
+                padding: 15px;
+                border-radius: 10px;
+                border-left: 3px solid #b84dff;
+            }}
+            
+            .message-info {{
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+                gap: 10px;
+                margin-bottom: 15px;
+            }}
+            
+            .info-item {{
+                background: rgba(255, 255, 255, 0.05);
+                padding: 10px;
+                border-radius: 8px;
+                text-align: center;
+            }}
+            
+            .info-label {{
+                font-size: 0.8em;
+                color: #a78bfa;
+                margin-bottom: 5px;
+            }}
+            
+            .info-value {{
+                font-weight: 600;
+                color: #ffd700;
+            }}
+            
+            .user-info {{
+                display: flex;
+                justify-content: space-between;
+                margin-top: 15px;
+                padding-top: 15px;
+                border-top: 1px solid rgba(255, 255, 255, 0.1);
+            }}
+            
+            .user-from, .user-to {{
+                flex: 1;
+                text-align: center;
+            }}
+            
+            .user-label {{
+                font-size: 0.8em;
+                color: #a78bfa;
+                margin-bottom: 5px;
+            }}
+            
+            .user-name {{
+                font-weight: 600;
+                color: #e0e0ff;
+            }}
+            
+            .timestamp {{
+                color: #a0a0ff;
+                font-size: 0.8em;
+                text-align: center;
+                margin-top: 10px;
+            }}
+            
+            .media-details {{
+                background: rgba(184, 77, 255, 0.1);
+                padding: 10px;
+                border-radius: 8px;
+                margin: 10px 0;
+                border-left: 3px solid #b84dff;
+            }}
+            
+            .footer {{
+                text-align: center;
+                margin-top: 50px;
+                padding: 30px;
+                background: linear-gradient(135deg, rgba(184, 77, 255, 0.1) 0%, rgba(108, 67, 255, 0.1) 100%);
+                border-radius: 20px;
+                border: 1px solid rgba(255, 255, 255, 0.1);
+            }}
+            
+            .footer-text {{
+                font-family: 'Rubik', sans-serif;
+                font-weight: 800;
+                font-size: 1.1em;
+                color: #ffd700;
+                letter-spacing: 2px;
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <h1 class="title">📨 ДЕТАЛЬНАЯ ИНФОРМАЦИЯ О СООБЩЕНИЯХ</h1>
+                <p style="color: #a78bfa; font-size: 1.2em; margin-bottom: 10px;">Полная информация о всех отправленных сообщениях и медиафайлах</p>
+                <p style="color: #a0a0ff;">Сгенерирован: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")} (Krasnoyarsk)</p>
+            </div>
+    '''
+    
+    if messages:
+        for msg in messages:
+            message_id, message_text, message_type, file_size, file_name, created, from_username, from_first_name, from_user_id, to_username, to_first_name, to_user_id, link_title, link_id, reply_count = msg
+            
+            type_icon = {
+                "text": "📝 ТЕКСТ",
+                "photo": "🖼️ ФОТО", 
+                "video": "🎥 ВИДЕО",
+                "document": "📄 ДОКУМЕНТ",
+                "voice": "🎤 ГОЛОСОВОЕ"
+            }.get(message_type, "📄 ФАЙЛ")
+            
+            from_user = f"@{from_username}" if from_username else (from_first_name or f"ID:{from_user_id}")
+            to_user = f"@{to_username}" if to_username else (to_first_name or f"ID:{to_user_id}")
+            
+            media_info = ""
+            if message_type != 'text':
+                file_size_display = f"{(file_size or 0) // 1024} KB" if file_size else "Неизвестно"
+                media_info = f'''
+                <div class="media-details">
+                    <div><strong>Тип файла:</strong> {message_type.upper()}</div>
+                    <div><strong>Размер:</strong> {file_size_display}</div>
+                    <div><strong>Имя файла:</strong> {file_name or 'Без названия'}</div>
+                </div>
+                '''
+            
+            html_content += f'''
+                <div class="message-card">
+                    <div class="message-header">
+                        <span class="message-type">{type_icon}</span>
+                        <span style="color: #ff6b6b; font-weight: 600;">💬 Ответов: {reply_count}</span>
+                    </div>
+                    
+                    <div class="message-content">
+                        {html.escape(message_text) if message_text else '📁 Медиафайл'}
+                        {media_info}
+                    </div>
+                    
+                    <div class="message-info">
+                        <div class="info-item">
+                            <div class="info-label">Ссылка</div>
+                            <div class="info-value">{html.escape(link_title)}</div>
+                        </div>
+                        <div class="info-item">
+                            <div class="info-label">ID Ссылки</div>
+                            <div class="info-value">{link_id}</div>
+                        </div>
+                        <div class="info-item">
+                            <div class="info-label">ID Сообщения</div>
+                            <div class="info-value">#{message_id}</div>
+                        </div>
+                    </div>
+                    
+                    <div class="user-info">
+                        <div class="user-from">
+                            <div class="user-label">👤 Отправитель</div>
+                            <div class="user-name">{html.escape(from_user)}</div>
+                            <div class="timestamp">ID: {from_user_id}</div>
+                        </div>
+                        <div class="user-to">
+                            <div class="user-label">🎯 Получатель</div>
+                            <div class="user-name">{html.escape(to_user)}</div>
+                            <div class="timestamp">ID: {to_user_id}</div>
+                        </div>
+                    </div>
+                    
+                    <div class="timestamp">🕒 Отправлено: {format_datetime(created)}</div>
+                </div>
+            '''
+    else:
+        html_content += '<div class="message-card"><div class="message-content">Нет сообщений</div></div>'
+    
+    html_content += '''
+            <div class="footer">
+                <div class="footer-text">
+                    🟣 АНОНИМНЫЙ Бот | СИСТЕМА АНАЛИТИКИ СООБЩЕНИЙ
+                </div>
             </div>
         </div>
     </body>
