@@ -451,42 +451,40 @@ def get_all_data_for_html():
             LIMIT 200
         ''', fetch="all") or []
         
+        # Новые данные для детального отчета
+        data['conversations'] = run_query('''
+            SELECT l.link_id, l.title, l.description, l.created_at,
+                   u.username, u.first_name, u.user_id,
+                   COUNT(m.message_id) as message_count,
+                   MAX(m.created_at) as last_activity
+            FROM links l
+            LEFT JOIN users u ON l.user_id = u.user_id
+            LEFT JOIN messages m ON l.link_id = m.link_id AND m.is_active = 1
+            WHERE l.is_active = 1
+            GROUP BY l.link_id
+            ORDER BY last_activity DESC
+        ''', fetch="all") or []
+        
+        data['detailed_messages'] = run_query('''
+            SELECT m.message_id, m.message_text, m.message_type, m.file_size, m.file_name, m.created_at,
+                   u_from.username as from_username, u_from.first_name as from_first_name, u_from.user_id as from_user_id,
+                   u_to.username as to_username, u_to.first_name as to_first_name, u_to.user_id as to_user_id,
+                   l.title as link_title, l.link_id,
+                   (SELECT COUNT(*) FROM replies r WHERE r.message_id = m.message_id AND r.is_active = 1) as reply_count
+            FROM messages m
+            LEFT JOIN users u_from ON m.from_user_id = u_from.user_id
+            LEFT JOIN users u_to ON m.to_user_id = u_to.user_id
+            LEFT JOIN links l ON m.link_id = l.link_id
+            WHERE m.is_active = 1
+            ORDER BY m.created_at DESC
+            LIMIT 500
+        ''', fetch="all") or []
+        
     except Exception as e:
         logging.error(f"Ошибка при получении данных для HTML: {e}")
-        data = {'stats': get_admin_stats(), 'users': [], 'links': [], 'recent_messages': []}
+        data = {'stats': get_admin_stats(), 'users': [], 'links': [], 'recent_messages': [], 'conversations': [], 'detailed_messages': []}
     
     return data
-
-def get_all_conversations_for_admin():
-    """Получает все переписки для админки"""
-    return run_query('''
-        SELECT l.link_id, l.title, l.description, l.created_at,
-               u.username, u.first_name, u.user_id,
-               COUNT(m.message_id) as message_count,
-               MAX(m.created_at) as last_activity
-        FROM links l
-        LEFT JOIN users u ON l.user_id = u.user_id
-        LEFT JOIN messages m ON l.link_id = m.link_id AND m.is_active = 1
-        WHERE l.is_active = 1
-        GROUP BY l.link_id
-        ORDER BY last_activity DESC
-    ''', fetch="all") or []
-
-def get_detailed_messages_for_admin():
-    """Получает детальную информацию о всех сообщениях"""
-    return run_query('''
-        SELECT m.message_id, m.message_text, m.message_type, m.file_size, m.file_name, m.created_at,
-               u_from.username as from_username, u_from.first_name as from_first_name, u_from.user_id as from_user_id,
-               u_to.username as to_username, u_to.first_name as to_first_name, u_to.user_id as to_user_id,
-               l.title as link_title, l.link_id,
-               (SELECT COUNT(*) FROM replies r WHERE r.message_id = m.message_id AND r.is_active = 1) as reply_count
-        FROM messages m
-        LEFT JOIN users u_from ON m.from_user_id = u_from.user_id
-        LEFT JOIN users u_to ON m.to_user_id = u_to.user_id
-        LEFT JOIN links l ON m.link_id = l.link_id
-        WHERE m.is_active = 1
-        ORDER BY m.created_at DESC
-    ''', fetch="all") or []
 
 # --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
 
@@ -523,11 +521,21 @@ def format_datetime(dt_string):
     """Форматирует дату-время с точностью до секунд (Красноярское время UTC+7)"""
     if isinstance(dt_string, str):
         try:
-            dt = datetime.fromisoformat(dt_string.replace('Z', '+00:00'))
+            # Пробуем разные форматы даты
+            for fmt in ['%Y-%m-%d %H:%M:%S', '%Y-%m-%d %H:%M:%S.%f', '%Y-%m-%dT%H:%M:%S', '%Y-%m-%dT%H:%M:%S.%f']:
+                try:
+                    dt = datetime.strptime(dt_string, fmt)
+                    break
+                except ValueError:
+                    continue
+            else:
+                return dt_string
         except:
             return dt_string
-    else:
+    elif isinstance(dt_string, datetime):
         dt = dt_string
+    else:
+        return str(dt_string)
     
     # Добавляем 7 часов для Красноярского времени
     krasnoyarsk_time = dt + timedelta(hours=7)
@@ -551,35 +559,31 @@ def parse_formatting(text):
     
     # Теперь экранируем оставшиеся HTML символы, но сохраняем наши теги
     # Временная замена наших тегов
-    text = text.replace('<b>', '___BOLD_OPEN___')
-    text = text.replace('</b>', '___BOLD_CLOSE___')
-    text = text.replace('<i>', '___ITALIC_OPEN___')
-    text = text.replace('</i>', '___ITALIC_CLOSE___')
-    text = text.replace('<s>', '___STRIKE_OPEN___')
-    text = text.replace('</s>', '___STRIKE_CLOSE___')
-    text = text.replace('<code>', '___CODE_OPEN___')
-    text = text.replace('</code>', '___CODE_CLOSE___')
-    text = text.replace('<spoiler>', '___SPOILER_OPEN___')
-    text = text.replace('</spoiler>', '___SPOILER_CLOSE___')
-    text = text.replace('<blockquote>', '___QUOTE_OPEN___')
-    text = text.replace('</blockquote>', '___QUOTE_CLOSE___')
+    replacements = {
+        '<b>': '___BOLD_OPEN___',
+        '</b>': '___BOLD_CLOSE___',
+        '<i>': '___ITALIC_OPEN___',
+        '</i>': '___ITALIC_CLOSE___',
+        '<s>': '___STRIKE_OPEN___',
+        '</s>': '___STRIKE_CLOSE___',
+        '<code>': '___CODE_OPEN___',
+        '</code>': '___CODE_CLOSE___',
+        '<spoiler>': '___SPOILER_OPEN___',
+        '</spoiler>': '___SPOILER_CLOSE___',
+        '<blockquote>': '___QUOTE_OPEN___',
+        '</blockquote>': '___QUOTE_CLOSE___'
+    }
+    
+    # Заменяем теги на временные маркеры
+    for original, replacement in replacements.items():
+        text = text.replace(original, replacement)
     
     # Экранируем HTML
     text = html.escape(text)
     
     # Восстанавливаем наши теги
-    text = text.replace('___BOLD_OPEN___', '<b>')
-    text = text.replace('___BOLD_CLOSE___', '</b>')
-    text = text.replace('___ITALIC_OPEN___', '<i>')
-    text = text.replace('___ITALIC_CLOSE___', '</i>')
-    text = text.replace('___STRIKE_OPEN___', '<s>')
-    text = text.replace('___STRIKE_CLOSE___', '</s>')
-    text = text.replace('___CODE_OPEN___', '<code>')
-    text = text.replace('___CODE_CLOSE___', '</code>')
-    text = text.replace('___SPOILER_OPEN___', '<spoiler>')
-    text = text.replace('___SPOILER_CLOSE___', '</spoiler>')
-    text = text.replace('___QUOTE_OPEN___', '<blockquote>')
-    text = text.replace('___QUOTE_CLOSE___', '</blockquote>')
+    for original, replacement in replacements.items():
+        text = text.replace(replacement, original)
     
     return text
 
@@ -621,8 +625,6 @@ def admin_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📊 Статистика", callback_data="admin_stats")],
         [InlineKeyboardButton("👥 Управление пользователями", callback_data="admin_users")],
-        [InlineKeyboardButton("💬 Все переписки", callback_data="admin_conversations")],
-        [InlineKeyboardButton("📨 Детали сообщений", callback_data="admin_messages")],
         [InlineKeyboardButton("🎨 HTML Отчет", callback_data="admin_html_report")],
         [InlineKeyboardButton("📢 Оповещение", callback_data="admin_broadcast")],
         [InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]
@@ -670,18 +672,6 @@ def broadcast_formatting_keyboard():
             InlineKeyboardButton("✅ Отправить", callback_data="broadcast_send"),
             InlineKeyboardButton("❌ Отмена", callback_data="admin_panel")
         ]
-    ])
-
-def conversations_keyboard():
-    """Клавиатура для управления переписками"""
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔙 Назад", callback_data="admin_panel")]
-    ])
-
-def messages_management_keyboard():
-    """Клавиатура для управления сообщениями"""
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔙 Назад", callback_data="admin_panel")]
     ])
 
 # --- ОСНОВНЫЕ ОБРАБОТЧИКИ ---
@@ -787,7 +777,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     
                     type_icon = {"text": "📝", "photo": "🖼️", "video": "🎥", "document": "📄", "voice": "🎤"}.get(msg_type, "📄")
                     
-                    preview = msg_text or f"*{msg_type}*"
+                    preview = safe_str(msg_text) or f"*{msg_type}*"
                     if len(preview) > 50:
                         preview = preview[:50] + "\\.\\.\\."
                         
@@ -864,7 +854,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     msg_text, msg_type, file_name, created, from_user, from_name, to_user, to_name, link_title, link_id = message_info
                     
                     text = f"🗑️ *Подтверждение удаления сообщения*\n\n"
-                    text += f"📝 *Сообщение:*\n`{msg_text if msg_text else f'Медиафайл: {msg_type}'}`\n\n"
+                    text += f"📝 *Сообщение:*\n`{safe_str(msg_text) if msg_text else f'Медиафайл: {msg_type}'}`\n\n"
                     text += f"❓ *Вы уверены, что хотите удалить это сообщение?*"
                     
                     await query.edit_message_text(text, parse_mode='MarkdownV2', 
@@ -1048,46 +1038,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
                 
                 await query.edit_message_text("✅ *HTML отчет сгенерирован и отправлен\\!*", parse_mode='MarkdownV2', reply_markup=admin_keyboard())
-                return
-
-            elif data == "admin_conversations":
-                await query.edit_message_text("🔄 *Загрузка всех переписок\\.\\.\\.*", parse_mode='MarkdownV2')
-                
-                html_content = generate_conversations_report()
-                
-                report_path = "/tmp/all_conversations.html"
-                with open(report_path, 'w', encoding='utf-8') as f:
-                    f.write(html_content)
-                
-                with open(report_path, 'rb') as f:
-                    await query.message.reply_document(
-                        document=f,
-                        filename=f"all_conversations_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html",
-                        caption="💬 *Все переписки и ссылки*",
-                        parse_mode='MarkdownV2'
-                    )
-                
-                await query.edit_message_text("✅ *Отчет всех переписок отправлен\\!*", parse_mode='MarkdownV2', reply_markup=admin_keyboard())
-                return
-
-            elif data == "admin_messages":
-                await query.edit_message_text("🔄 *Загрузка детальной информации о сообщениях\\.\\.\\.*", parse_mode='MarkdownV2')
-                
-                html_content = generate_detailed_messages_report()
-                
-                report_path = "/tmp/detailed_messages.html"
-                with open(report_path, 'w', encoding='utf-8') as f:
-                    f.write(html_content)
-                
-                with open(report_path, 'rb') as f:
-                    await query.message.reply_document(
-                        document=f,
-                        filename=f"detailed_messages_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html",
-                        caption="📨 *Детальная информация о всех сообщениях*",
-                        parse_mode='MarkdownV2'
-                    )
-                
-                await query.edit_message_text("✅ *Детальный отчет сообщений отправлен\\!*", parse_mode='MarkdownV2', reply_markup=admin_keyboard())
                 return
             
             elif data == "admin_broadcast":
@@ -1501,9 +1451,9 @@ def generate_conversation_report(user_id):
     
     return html_content
 
-def generate_conversations_report():
-    """Генерирует HTML отчет всех переписок"""
-    conversations = get_all_conversations_for_admin()
+def generate_beautiful_html_report():
+    """Генерирует красивый HTML отчет с твоим стилем"""
+    data = get_all_data_for_html()
     
     html_content = f'''
     <!DOCTYPE html>
@@ -1511,7 +1461,7 @@ def generate_conversations_report():
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>💬 Все переписки и ссылки</title>
+        <title>🟣 Анонимный Бот - Панель Администратора</title>
         <link href="https://fonts.googleapis.com/css2?family=Rubik:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
         <style>
             * {{
@@ -1521,7 +1471,14 @@ def generate_conversations_report():
                 -webkit-tap-highlight-color: rgba(184, 77, 255, 0.3);
             }}
             
+            /* Кастомное выделение */
             ::selection {{
+                background: rgba(184, 77, 255, 0.3);
+                color: #ffffff;
+                border-radius: 4px;
+            }}
+            
+            ::-moz-selection {{
                 background: rgba(184, 77, 255, 0.3);
                 color: #ffffff;
                 border-radius: 4px;
@@ -1529,15 +1486,17 @@ def generate_conversations_report():
             
             body {{
                 font-family: 'Rubik', sans-serif;
-                background: linear-gradient(135deg, #0f0829 0%, #1a1a2e 50%, #16213e 100%);
+                background: #0f0829;
                 color: #e8e6f3;
                 min-height: 100vh;
                 padding: 40px 20px;
+                overflow-x: auto;
             }}
             
             .container {{
-                max-width: 1200px;
+                max-width: 1400px;
                 margin: 0 auto;
+                min-width: 1000px;
             }}
             
             .header {{
@@ -1547,7 +1506,7 @@ def generate_conversations_report():
             
             .title {{
                 font-weight: 900;
-                font-size: 3em;
+                font-size: 3.2em;
                 background: linear-gradient(135deg, #b84dff 0%, #6c43ff 50%, #ff47d6 100%);
                 -webkit-background-clip: text;
                 -webkit-text-fill-color: transparent;
@@ -1557,6 +1516,125 @@ def generate_conversations_report():
                 letter-spacing: 2px;
             }}
             
+            .subtitle {{
+                font-weight: 600;
+                font-size: 1.3em;
+                color: #a78bfa;
+                opacity: 0.9;
+                margin-bottom: 25px;
+            }}
+            
+            .stats-grid {{
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+                gap: 25px;
+                margin-bottom: 40px;
+            }}
+            
+            .stat-card {{
+                background: linear-gradient(135deg, rgba(255, 255, 255, 0.1) 0%, rgba(255, 255, 255, 0.05) 100%);
+                backdrop-filter: blur(15px);
+                padding: 30px 25px;
+                border-radius: 20px;
+                text-align: center;
+                border: 1px solid rgba(255, 255, 255, 0.1);
+                transition: all 0.3s ease;
+                position: relative;
+                overflow: hidden;
+            }}
+            
+            .stat-card:hover {{
+                transform: translateY(-8px) scale(1.02);
+                box-shadow: 0 15px 35px rgba(0, 0, 0, 0.4);
+                border-color: rgba(184, 77, 255, 0.3);
+            }}
+            
+            .stat-card h3 {{
+                font-family: 'Rubik', sans-serif;
+                font-weight: 800;
+                font-size: 3em;
+                margin-bottom: 15px;
+                background: linear-gradient(135deg, #ffd700 0%, #ff6b6b 50%, #b84dff 100%);
+                -webkit-background-clip: text;
+                -webkit-text-fill-color: transparent;
+                background-clip: text;
+            }}
+            
+            .stat-card p {{
+                color: #e0e0ff;
+                font-size: 1em;
+                font-weight: 500;
+                text-transform: uppercase;
+                letter-spacing: 1px;
+            }}
+            
+            .section {{
+                background: linear-gradient(135deg, rgba(255, 255, 255, 0.08) 0%, rgba(255, 255, 255, 0.03) 100%);
+                backdrop-filter: blur(15px);
+                padding: 30px;
+                border-radius: 20px;
+                margin-bottom: 35px;
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                position: relative;
+                overflow: hidden;
+            }}
+            
+            .section::before {{
+                content: '';
+                position: absolute;
+                top: 0;
+                left: 0;
+                right: 0;
+                height: 3px;
+                background: linear-gradient(90deg, #b84dff, #6c43ff, #ff47d6);
+            }}
+            
+            .section h2 {{
+                font-family: 'Rubik', sans-serif;
+                font-weight: 800;
+                font-size: 1.8em;
+                margin-bottom: 25px;
+                color: #ffffff;
+                display: flex;
+                align-items: center;
+                gap: 15px;
+            }}
+            
+            table {{
+                width: 100%;
+                border-collapse: collapse;
+                background: rgba(255, 255, 255, 0.02);
+                border-radius: 15px;
+                overflow: hidden;
+                margin-top: 15px;
+            }}
+            
+            th, td {{
+                padding: 15px 20px;
+                text-align: left;
+                border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+            }}
+            
+            th {{
+                background: linear-gradient(135deg, rgba(184, 77, 255, 0.2) 0%, rgba(108, 67, 255, 0.2) 100%);
+                color: #ffd700;
+                font-weight: 700;
+                font-family: 'Rubik', sans-serif;
+                text-transform: uppercase;
+                letter-spacing: 1px;
+                font-size: 0.9em;
+            }}
+            
+            td {{
+                color: #e0e0ff;
+                font-weight: 500;
+            }}
+            
+            tr:hover {{
+                background: rgba(255, 255, 255, 0.05);
+            }}
+            
+            /* Новые стили для детальной информации */
             .conversation-grid {{
                 display: grid;
                 grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
@@ -1638,127 +1716,6 @@ def generate_conversations_report():
                 font-size: 0.8em;
                 margin-top: 10px;
                 display: inline-block;
-            }}
-            
-            .footer {{
-                text-align: center;
-                margin-top: 50px;
-                padding: 30px;
-                background: linear-gradient(135deg, rgba(184, 77, 255, 0.1) 0%, rgba(108, 67, 255, 0.1) 100%);
-                border-radius: 20px;
-                border: 1px solid rgba(255, 255, 255, 0.1);
-            }}
-            
-            .footer-text {{
-                font-family: 'Rubik', sans-serif;
-                font-weight: 800;
-                font-size: 1.1em;
-                color: #ffd700;
-                letter-spacing: 2px;
-            }}
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <div class="header">
-                <h1 class="title">💬 ВСЕ ПЕРЕПИСКИ И ССЫЛКИ</h1>
-                <p style="color: #a78bfa; font-size: 1.2em; margin-bottom: 10px;">Полный обзор всех активных ссылок и их переписок</p>
-                <p style="color: #a0a0ff;">Сгенерирован: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")} (Krasnoyarsk)</p>
-            </div>
-            
-            <div class="conversation-grid">
-    '''
-    
-    if conversations:
-        for conv in conversations:
-            owner = f"@{conv[4]}" if conv[4] else (html.escape(conv[5]) if conv[5] else f"ID:{conv[6]}")
-            last_activity = format_datetime(conv[7]) if conv[7] else "Нет активности"
-            
-            html_content += f'''
-                <div class="conversation-card">
-                    <div class="link-title">{html.escape(conv[1])}</div>
-                    <div class="link-description">{html.escape(conv[2])}</div>
-                    <div class="link-info">
-                        <span class="link-owner">👤 {owner}</span>
-                        <span class="message-count">💬 {conv[3]} сообщ.</span>
-                    </div>
-                    <div class="timestamp">🕒 Создана: {format_datetime(conv[3])}</div>
-                    <div class="timestamp">📅 Активность: {last_activity}</div>
-                    <div class="link-id">🔗 ID: {conv[0]}</div>
-                </div>
-            '''
-    else:
-        html_content += '<div class="conversation-card"><div class="link-title">Нет активных переписок</div></div>'
-    
-    html_content += '''
-            </div>
-            
-            <div class="footer">
-                <div class="footer-text">
-                    🟣 АНОНИМНЫЙ Бот | СИСТЕМА УПРАВЛЕНИЯ ПЕРЕПИСКАМИ
-                </div>
-            </div>
-        </div>
-    </body>
-    </html>
-    '''
-    
-    return html_content
-
-def generate_detailed_messages_report():
-    """Генерирует детальный HTML отчет всех сообщений"""
-    messages = get_detailed_messages_for_admin()
-    
-    html_content = f'''
-    <!DOCTYPE html>
-    <html lang="ru">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>📨 Детальная информация о сообщениях</title>
-        <link href="https://fonts.googleapis.com/css2?family=Rubik:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
-        <style>
-            * {{
-                margin: 0;
-                padding: 0;
-                box-sizing: border-box;
-                -webkit-tap-highlight-color: rgba(184, 77, 255, 0.3);
-            }}
-            
-            ::selection {{
-                background: rgba(184, 77, 255, 0.3);
-                color: #ffffff;
-                border-radius: 4px;
-            }}
-            
-            body {{
-                font-family: 'Rubik', sans-serif;
-                background: linear-gradient(135deg, #0f0829 0%, #1a1a2e 50%, #16213e 100%);
-                color: #e8e6f3;
-                min-height: 100vh;
-                padding: 40px 20px;
-            }}
-            
-            .container {{
-                max-width: 1400px;
-                margin: 0 auto;
-            }}
-            
-            .header {{
-                text-align: center;
-                margin-bottom: 40px;
-            }}
-            
-            .title {{
-                font-weight: 900;
-                font-size: 3em;
-                background: linear-gradient(135deg, #b84dff 0%, #6c43ff 50%, #ff47d6 100%);
-                -webkit-background-clip: text;
-                -webkit-text-fill-color: transparent;
-                background-clip: text;
-                margin-bottom: 15px;
-                text-transform: uppercase;
-                letter-spacing: 2px;
             }}
             
             .message-card {{
@@ -1867,13 +1824,6 @@ def generate_detailed_messages_report():
                 color: #e0e0ff;
             }}
             
-            .timestamp {{
-                color: #a0a0ff;
-                font-size: 0.8em;
-                text-align: center;
-                margin-top: 10px;
-            }}
-            
             .media-details {{
                 background: rgba(184, 77, 255, 0.1);
                 padding: 10px;
@@ -1902,15 +1852,93 @@ def generate_detailed_messages_report():
     </head>
     <body>
         <div class="container">
+            <!-- Заголовок -->
             <div class="header">
-                <h1 class="title">📨 ДЕТАЛЬНАЯ ИНФОРМАЦИЯ О СООБЩЕНИЯХ</h1>
-                <p style="color: #a78bfa; font-size: 1.2em; margin-bottom: 10px;">Полная информация о всех отправленных сообщениях и медиафайлах</p>
-                <p style="color: #a0a0ff;">Сгенерирован: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")} (Krasnoyarsk)</p>
+                <h1 class="title">🛠️ АДМИН ПАНЕЛЬ</h1>
+                <div class="subtitle">Анонимный Бот - Полная статистика системы</div>
+                <div style="color: #a78bfa; font-size: 1.1em;">
+                    📅 Отчет сгенерирован: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")} (Krasnoyarsk)
+                </div>
             </div>
+            
+            <!-- Основная статистика -->
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <h3>{data['stats']['users']}</h3>
+                    <p>👥 Всего пользователей</p>
+                </div>
+                <div class="stat-card">
+                    <h3>{data['stats']['links']}</h3>
+                    <p>🔗 Активных ссылок</p>
+                </div>
+                <div class="stat-card">
+                    <h3>{data['stats']['messages']}</h3>
+                    <p>📨 Всего сообщений</p>
+                </div>
+                <div class="stat-card">
+                    <h3>{data['stats']['replies']}</h3>
+                    <p>💬 Ответов</p>
+                </div>
+            </div>
+            
+            <!-- Статистика файлов -->
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <h3>{data['stats']['photos']}</h3>
+                    <p>🖼️ Фотографий</p>
+                </div>
+                <div class="stat-card">
+                    <h3>{data['stats']['videos']}</h3>
+                    <p>🎥 Видео</p>
+                </div>
+                <div class="stat-card">
+                    <h3>{data['stats']['documents']}</h3>
+                    <p>📄 Документов</p>
+                </div>
+                <div class="stat-card">
+                    <h3>{data['stats']['voice']}</h3>
+                    <p>🎤 Голосовых</p>
+                </div>
+            </div>
+            
+            <!-- Все переписки -->
+            <div class="section">
+                <h2>💬 ВСЕ АКТИВНЫЕ ПЕРЕПИСКИ</h2>
+                <div class="conversation-grid">
     '''
     
-    if messages:
-        for msg in messages:
+    if data['conversations']:
+        for conv in data['conversations'][:12]:  # Ограничиваем до 12 карточек
+            owner = f"@{conv[4]}" if conv[4] else (html.escape(conv[5]) if conv[5] else f"ID:{conv[6]}")
+            last_activity = format_datetime(conv[7]) if conv[7] else "Нет активности"
+            
+            html_content += f'''
+                    <div class="conversation-card">
+                        <div class="link-title">{html.escape(conv[1])}</div>
+                        <div class="link-description">{html.escape(conv[2])}</div>
+                        <div class="link-info">
+                            <span class="link-owner">👤 {owner}</span>
+                            <span class="message-count">💬 {conv[3]} сообщ.</span>
+                        </div>
+                        <div class="timestamp">🕒 Создана: {format_datetime(conv[3])}</div>
+                        <div class="timestamp">📅 Активность: {last_activity}</div>
+                        <div class="link-id">🔗 ID: {conv[0]}</div>
+                    </div>
+            '''
+    else:
+        html_content += '<div class="conversation-card"><div class="link-title">Нет активных переписок</div></div>'
+    
+    html_content += '''
+                </div>
+            </div>
+            
+            <!-- Детальная информация о сообщениях -->
+            <div class="section">
+                <h2>📨 ПОСЛЕДНИЕ СООБЩЕНИЯ И МЕДИА</h2>
+    '''
+    
+    if data['detailed_messages']:
+        for msg in data['detailed_messages'][:10]:  # Ограничиваем до 10 сообщений
             message_id, message_text, message_type, file_size, file_name, created, from_username, from_first_name, from_user_id, to_username, to_first_name, to_user_id, link_title, link_id, reply_count = msg
             
             type_icon = {
@@ -1982,268 +2010,6 @@ def generate_detailed_messages_report():
         html_content += '<div class="message-card"><div class="message-content">Нет сообщений</div></div>'
     
     html_content += '''
-            <div class="footer">
-                <div class="footer-text">
-                    🟣 АНОНИМНЫЙ Бот | СИСТЕМА АНАЛИТИКИ СООБЩЕНИЙ
-                </div>
-            </div>
-        </div>
-    </body>
-    </html>
-    '''
-    
-    return html_content
-
-def generate_beautiful_html_report():
-    """Генерирует красивый HTML отчет с твоим стилем"""
-    data = get_all_data_for_html()
-    
-    html_content = '''
-    <!DOCTYPE html>
-    <html lang="ru">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>🟣 Анонимный Бот - Панель Администратора</title>
-        <link href="https://fonts.googleapis.com/css2?family=Rubik:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
-        <style>
-            * {
-                margin: 0;
-                padding: 0;
-                box-sizing: border-box;
-                -webkit-tap-highlight-color: rgba(184, 77, 255, 0.3);
-            }
-            
-            /* Кастомное выделение */
-            ::selection {
-                background: rgba(184, 77, 255, 0.3);
-                color: #ffffff;
-                border-radius: 4px;
-            }
-            
-            ::-moz-selection {
-                background: rgba(184, 77, 255, 0.3);
-                color: #ffffff;
-                border-radius: 4px;
-            }
-            
-            body {
-                font-family: 'Rubik', sans-serif;
-                background: #0f0829;
-                color: #e8e6f3;
-                min-height: 100vh;
-                padding: 40px 20px;
-                overflow-x: auto;
-            }
-            
-            .container {
-                max-width: 1400px;
-                margin: 0 auto;
-                min-width: 1000px;
-            }
-            
-            .header {
-                text-align: center;
-                margin-bottom: 40px;
-            }
-            
-            .title {
-                font-weight: 900;
-                font-size: 3.2em;
-                background: linear-gradient(135deg, #b84dff 0%, #6c43ff 50%, #ff47d6 100%);
-                -webkit-background-clip: text;
-                -webkit-text-fill-color: transparent;
-                background-clip: text;
-                margin-bottom: 15px;
-                text-transform: uppercase;
-                letter-spacing: 2px;
-            }
-            
-            .subtitle {
-                font-weight: 600;
-                font-size: 1.3em;
-                color: #a78bfa;
-                opacity: 0.9;
-                margin-bottom: 25px;
-            }
-            
-            .stats-grid {
-                display: grid;
-                grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-                gap: 25px;
-                margin-bottom: 40px;
-            }
-            
-            .stat-card {
-                background: linear-gradient(135deg, rgba(255, 255, 255, 0.1) 0%, rgba(255, 255, 255, 0.05) 100%);
-                backdrop-filter: blur(15px);
-                padding: 30px 25px;
-                border-radius: 20px;
-                text-align: center;
-                border: 1px solid rgba(255, 255, 255, 0.1);
-                transition: all 0.3s ease;
-                position: relative;
-                overflow: hidden;
-            }
-            
-            .stat-card:hover {
-                transform: translateY(-8px) scale(1.02);
-                box-shadow: 0 15px 35px rgba(0, 0, 0, 0.4);
-                border-color: rgba(184, 77, 255, 0.3);
-            }
-            
-            .stat-card h3 {
-                font-family: 'Rubik', sans-serif;
-                font-weight: 800;
-                font-size: 3em;
-                margin-bottom: 15px;
-                background: linear-gradient(135deg, #ffd700 0%, #ff6b6b 50%, #b84dff 100%);
-                -webkit-background-clip: text;
-                -webkit-text-fill-color: transparent;
-                background-clip: text;
-            }
-            
-            .stat-card p {
-                color: #e0e0ff;
-                font-size: 1em;
-                font-weight: 500;
-                text-transform: uppercase;
-                letter-spacing: 1px;
-            }
-            
-            .section {
-                background: linear-gradient(135deg, rgba(255, 255, 255, 0.08) 0%, rgba(255, 255, 255, 0.03) 100%);
-                backdrop-filter: blur(15px);
-                padding: 30px;
-                border-radius: 20px;
-                margin-bottom: 35px;
-                border: 1px solid rgba(255, 255, 255, 0.08);
-                position: relative;
-                overflow: hidden;
-            }
-            
-            .section::before {
-                content: '';
-                position: absolute;
-                top: 0;
-                left: 0;
-                right: 0;
-                height: 3px;
-                background: linear-gradient(90deg, #b84dff, #6c43ff, #ff47d6);
-            }
-            
-            .section h2 {
-                font-family: 'Rubik', sans-serif;
-                font-weight: 800;
-                font-size: 1.8em;
-                margin-bottom: 25px;
-                color: #ffffff;
-                display: flex;
-                align-items: center;
-                gap: 15px;
-            }
-            
-            table {
-                width: 100%;
-                border-collapse: collapse;
-                background: rgba(255, 255, 255, 0.02);
-                border-radius: 15px;
-                overflow: hidden;
-                margin-top: 15px;
-            }
-            
-            th, td {
-                padding: 15px 20px;
-                text-align: left;
-                border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-            }
-            
-            th {
-                background: linear-gradient(135deg, rgba(184, 77, 255, 0.2) 0%, rgba(108, 67, 255, 0.2) 100%);
-                color: #ffd700;
-                font-weight: 700;
-                font-family: 'Rubik', sans-serif;
-                text-transform: uppercase;
-                letter-spacing: 1px;
-                font-size: 0.9em;
-            }
-            
-            td {
-                color: #e0e0ff;
-                font-weight: 500;
-            }
-            
-            tr:hover {
-                background: rgba(255, 255, 255, 0.05);
-            }
-            
-            .footer {
-                text-align: center;
-                margin-top: 50px;
-                padding: 30px;
-                background: linear-gradient(135deg, rgba(184, 77, 255, 0.1) 0%, rgba(108, 67, 255, 0.1) 100%);
-                border-radius: 20px;
-                border: 1px solid rgba(255, 255, 255, 0.1);
-            }
-            
-            .footer-text {
-                font-family: 'Rubik', sans-serif;
-                font-weight: 800;
-                font-size: 1.1em;
-                color: #ffd700;
-                letter-spacing: 2px;
-            }
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <!-- Заголовок -->
-            <div class="header">
-                <h1 class="title">🛠️ АДМИН ПАНЕЛЬ</h1>
-                <div class="subtitle">Анонимный Бот - Полная статистика системы</div>
-                <div style="color: #a78bfa; font-size: 1.1em;">
-                    📅 Отчет сгенерирован: ''' + datetime.now().strftime("%Y-%m-%d %H:%M:%S") + ''' (Krasnoyarsk)
-                </div>
-            </div>
-            
-            <!-- Основная статистика -->
-            <div class="stats-grid">
-                <div class="stat-card">
-                    <h3>''' + str(data['stats']['users']) + '''</h3>
-                    <p>👥 Всего пользователей</p>
-                </div>
-                <div class="stat-card">
-                    <h3>''' + str(data['stats']['links']) + '''</h3>
-                    <p>🔗 Активных ссылок</p>
-                </div>
-                <div class="stat-card">
-                    <h3>''' + str(data['stats']['messages']) + '''</h3>
-                    <p>📨 Всего сообщений</p>
-                </div>
-                <div class="stat-card">
-                    <h3>''' + str(data['stats']['replies']) + '''</h3>
-                    <p>💬 Ответов</p>
-                </div>
-            </div>
-            
-            <!-- Статистика файлов -->
-            <div class="stats-grid">
-                <div class="stat-card">
-                    <h3>''' + str(data['stats']['photos']) + '''</h3>
-                    <p>🖼️ Фотографий</p>
-                </div>
-                <div class="stat-card">
-                    <h3>''' + str(data['stats']['videos']) + '''</h3>
-                    <p>🎥 Видео</p>
-                </div>
-                <div class="stat-card">
-                    <h3>''' + str(data['stats']['documents']) + '''</h3>
-                    <p>📄 Документов</p>
-                </div>
-                <div class="stat-card">
-                    <h3>''' + str(data['stats']['voice']) + '''</h3>
-                    <p>🎤 Голосовых</p>
-                </div>
             </div>
             
             <!-- Пользователи -->
