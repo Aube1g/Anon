@@ -111,7 +111,9 @@ def init_db():
                 user_id INTEGER PRIMARY KEY, 
                 username TEXT, 
                 first_name TEXT, 
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                is_banned BOOLEAN DEFAULT 0,
+                ban_reason TEXT DEFAULT NULL
             )
         ''')
         
@@ -124,6 +126,8 @@ def init_db():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, 
                 expires_at TIMESTAMP, 
                 is_active BOOLEAN DEFAULT 1,
+                is_sponsor BOOLEAN DEFAULT 0,
+                sponsor_owner_id INTEGER DEFAULT NULL,
                 FOREIGN KEY (user_id) REFERENCES users (user_id)
             )
         ''')
@@ -157,6 +161,16 @@ def init_db():
             )
         ''')
         
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS admin_messages (
+                admin_message_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                from_admin_id INTEGER,
+                to_user_id INTEGER,
+                message_text TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
         conn.commit()
         conn.close()
         
@@ -187,11 +201,11 @@ def save_user(user_id, username, first_name):
     run_query('INSERT OR IGNORE INTO users (user_id, username, first_name) VALUES (?, ?, ?)', 
               (user_id, username, first_name), commit=True)
 
-def create_anon_link(user_id, title, description):
+def create_anon_link(user_id, title, description, is_sponsor=False, sponsor_owner_id=None):
     link_id = ''.join(secrets.choice(string.ascii_letters + string.digits) for _ in range(10))
     expires_at = datetime.now() + timedelta(days=365)
-    run_query('INSERT INTO links (link_id, user_id, title, description, expires_at) VALUES (?, ?, ?, ?, ?)', 
-              (link_id, user_id, title, description, expires_at), commit=True)
+    run_query('INSERT INTO links (link_id, user_id, title, description, expires_at, is_sponsor, sponsor_owner_id) VALUES (?, ?, ?, ?, ?, ?, ?)', 
+              (link_id, user_id, title, description, expires_at, is_sponsor, sponsor_owner_id), commit=True)
     push_db_to_github(f"Create link for user {user_id}")
     return link_id
 
@@ -208,6 +222,11 @@ def save_reply(message_id, from_user_id, reply_text):
     run_query('INSERT INTO replies (message_id, from_user_id, reply_text) VALUES (?, ?, ?)', 
               (message_id, from_user_id, reply_text), commit=True)
     push_db_to_github(f"Save reply to message {message_id}")
+
+def save_admin_message(from_admin_id, to_user_id, message_text):
+    run_query('INSERT INTO admin_messages (from_admin_id, to_user_id, message_text) VALUES (?, ?, ?)', 
+              (from_admin_id, to_user_id, message_text), commit=True)
+    push_db_to_github(f"Save admin message to user {to_user_id}")
 
 def get_link_info(link_id):
     return run_query('SELECT l.link_id, l.user_id, l.title, l.description, u.username FROM links l LEFT JOIN users u ON l.user_id = u.user_id WHERE l.link_id = ? AND l.is_active = 1', (link_id,), fetch="one")
@@ -323,7 +342,7 @@ def get_conversation_for_user(user_id):
     ''', (user_id, user_id, user_id), fetch="all")
 
 def get_all_users_for_admin():
-    result = run_query("SELECT user_id, username, first_name, created_at FROM users ORDER BY created_at DESC", fetch="all")
+    result = run_query("SELECT user_id, username, first_name, created_at, is_banned, ban_reason FROM users ORDER BY created_at DESC", fetch="all")
     return result or []
 
 def get_user_links_for_admin(user_id):
@@ -348,11 +367,68 @@ def get_admin_stats():
         stats['videos'] = run_query("SELECT COUNT(*) FROM messages WHERE message_type = 'video' AND is_active = 1", fetch="one")[0] or 0
         stats['documents'] = run_query("SELECT COUNT(*) FROM messages WHERE message_type = 'document' AND is_active = 1", fetch="one")[0] or 0
         stats['voice'] = run_query("SELECT COUNT(*) FROM messages WHERE message_type = 'voice' AND is_active = 1", fetch="one")[0] or 0
+        
+        stats['banned'] = run_query("SELECT COUNT(*) FROM users WHERE is_banned = 1", fetch="one")[0] or 0
+        stats['sponsor_links'] = run_query("SELECT COUNT(*) FROM links WHERE is_sponsor = 1", fetch="one")[0] or 0
     except Exception as e:
         logging.error(f"Ошибка при получении статистики: {e}")
-        stats = {'users': 0, 'links': 0, 'messages': 0, 'replies': 0, 'photos': 0, 'videos': 0, 'documents': 0, 'voice': 0}
+        stats = {'users': 0, 'links': 0, 'messages': 0, 'replies': 0, 'photos': 0, 'videos': 0, 'documents': 0, 'voice': 0, 'banned': 0, 'sponsor_links': 0}
     
     return stats
+
+# --- НОВЫЕ ФУНКЦИИ ДЛЯ УПРАВЛЕНИЯ ПОЛЬЗОВАТЕЛЯМИ ---
+
+def ban_user(user_id, reason=None):
+    """Блокирует пользователя"""
+    return run_query('UPDATE users SET is_banned = 1, ban_reason = ? WHERE user_id = ?', 
+                    (reason, user_id), commit=True)
+
+def unban_user(user_id):
+    """Разблокирует пользователя"""
+    return run_query('UPDATE users SET is_banned = 0, ban_reason = NULL WHERE user_id = ?', 
+                    (user_id,), commit=True)
+
+def delete_user(user_id):
+    """Полностью удаляет пользователя и все его данные"""
+    try:
+        # Получаем все ссылки пользователя
+        user_links = get_user_links_for_admin(user_id)
+        
+        # Удаляем все ссылки пользователя
+        for link in user_links:
+            delete_link_completely(link[0])
+        
+        # Удаляем сообщения пользователя
+        run_query('DELETE FROM messages WHERE from_user_id = ? OR to_user_id = ?', (user_id, user_id), commit=True)
+        
+        # Удаляем ответы пользователя
+        run_query('DELETE FROM replies WHERE from_user_id = ?', (user_id,), commit=True)
+        
+        # Удаляем пользователя
+        run_query('DELETE FROM users WHERE user_id = ?', (user_id,), commit=True)
+        
+        push_db_to_github(f"Completely delete user {user_id}")
+        return True
+    except Exception as e:
+        logging.error(f"Ошибка при удалении пользователя: {e}")
+        return False
+
+def is_user_banned(user_id):
+    """Проверяет, забанен ли пользователь"""
+    result = run_query('SELECT is_banned FROM users WHERE user_id = ?', (user_id,), fetch="one")
+    return result and result[0] == 1
+
+def create_sponsor_link(admin_id, title, description, target_user_id=None):
+    """Создает спонсорскую ссылку"""
+    return create_anon_link(target_user_id or admin_id, title, description, is_sponsor=True, sponsor_owner_id=admin_id)
+
+def get_sponsor_links(admin_id):
+    """Получает спонсорские ссылки админа"""
+    return run_query('SELECT link_id, title, description, created_at, user_id FROM links WHERE is_sponsor = 1 AND sponsor_owner_id = ?', (admin_id,), fetch="all")
+
+def transfer_sponsor_link(link_id, new_user_id):
+    """Передает спонсорскую ссылку другому пользователю"""
+    return run_query('UPDATE links SET user_id = ? WHERE link_id = ?', (new_user_id, link_id), commit=True)
 
 # --- ФУНКЦИИ УДАЛЕНИЯ ---
 
@@ -419,7 +495,7 @@ def get_all_data_for_html():
     try:
         data['stats'] = get_admin_stats()
         data['users'] = run_query('''
-            SELECT u.user_id, u.username, u.first_name, u.created_at,
+            SELECT u.user_id, u.username, u.first_name, u.created_at, u.is_banned, u.ban_reason,
                    (SELECT COUNT(*) FROM links l WHERE l.user_id = u.user_id AND l.is_active = 1) as link_count,
                    (SELECT COUNT(*) FROM messages m WHERE m.to_user_id = u.user_id AND m.is_active = 1) as received_messages,
                    (SELECT COUNT(*) FROM messages m WHERE m.from_user_id = u.user_id AND m.is_active = 1) as sent_messages
@@ -428,7 +504,7 @@ def get_all_data_for_html():
         ''', fetch="all") or []
         
         data['links'] = run_query('''
-            SELECT l.link_id, l.title, l.description, l.created_at, l.expires_at,
+            SELECT l.link_id, l.title, l.description, l.created_at, l.expires_at, l.is_sponsor,
                    u.username, u.first_name, u.user_id,
                    (SELECT COUNT(*) FROM messages m WHERE m.link_id = l.link_id AND m.is_active = 1) as message_count
             FROM links l
@@ -610,6 +686,7 @@ def admin_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📊 Статистика", callback_data="admin_stats")],
         [InlineKeyboardButton("👥 Управление пользователями", callback_data="admin_users")],
+        [InlineKeyboardButton("🔗 Спонсорские ссылки", callback_data="admin_sponsor_links")],
         [InlineKeyboardButton("🎨 HTML Отчет", callback_data="admin_html_report")],
         [InlineKeyboardButton("📢 Оповещение", callback_data="admin_broadcast")],
         [InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]
@@ -620,6 +697,14 @@ def user_management_keyboard(user_id):
         [
             InlineKeyboardButton("🔗 Ссылки", callback_data=f"admin_user_links_{user_id}"),
             InlineKeyboardButton("📨 Переписка", callback_data=f"admin_view_conversation_{user_id}")
+        ],
+        [
+            InlineKeyboardButton("🚫 Забанить", callback_data=f"admin_ban_user_{user_id}"),
+            InlineKeyboardButton("✅ Разбанить", callback_data=f"admin_unban_user_{user_id}")
+        ],
+        [
+            InlineKeyboardButton("🗑️ Удалить", callback_data=f"admin_delete_user_{user_id}"),
+            InlineKeyboardButton("✉️ Написать", callback_data=f"admin_message_user_{user_id}")
         ],
         [InlineKeyboardButton("🔙 Назад", callback_data="admin_users")]
     ])
@@ -659,11 +744,33 @@ def broadcast_formatting_keyboard():
         ]
     ])
 
+def sponsor_links_keyboard():
+    """Клавиатура для управления спонсорскими ссылками"""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("➕ Создать спонсорскую ссылку", callback_data="admin_create_sponsor_link")],
+        [InlineKeyboardButton("📋 Мои спонсорские ссылки", callback_data="admin_my_sponsor_links")],
+        [InlineKeyboardButton("🔙 Назад", callback_data="admin_panel")]
+    ])
+
+def sponsor_link_actions_keyboard(link_id):
+    """Клавиатура действий для спонсорской ссылки"""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔄 Передать ссылку", callback_data=f"admin_transfer_sponsor_{link_id}")],
+        [InlineKeyboardButton("🗑️ Удалить ссылку", callback_data=f"admin_delete_sponsor_{link_id}")],
+        [InlineKeyboardButton("🔙 Назад", callback_data="admin_my_sponsor_links")]
+    ])
+
 # --- ОСНОВНЫЕ ОБРАБОТЧИКИ ---
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         user = update.effective_user
+        
+        # Проверяем, не забанен ли пользователь
+        if is_user_banned(user.id):
+            await update.message.reply_text("❌ Вы заблокированы в этом боте и не можете использовать его функции.")
+            return
+        
         save_user(user.id, user.username, user.first_name)
         
         if context.args:
@@ -913,7 +1020,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 👥 *Пользователи\\:*
 • Всего пользователей\\: {stats['users']}
+• Заблокированных\\: {stats['banned']}
 • Активных ссылок\\: {stats['links']}
+• Спонсорских ссылок\\: {stats['sponsor_links']}
 
 💌 *Сообщения\\:*
 • Всего сообщений\\: {stats['messages']}
@@ -936,15 +1045,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         username = u[1] if u[1] else (u[2] or f"ID:{u[0]}")
                         username_display = f"@{username}" if u[1] else username
                         created = format_datetime(u[3])
-                        text += f"👤 *{escape_markdown_v2(username_display)}*\n🆔 `{u[0]}` \\| 📅 `{created}`\n\n"
+                        ban_status = "🚫 ЗАБЛОКИРОВАН" if u[4] else "✅ АКТИВЕН"
+                        text += f"👤 *{escape_markdown_v2(username_display)}*\n🆔 `{u[0]}` \\| 📅 `{created}` \\| {ban_status}\n\n"
                     
                     # Добавляем кнопки управления для каждого пользователя
                     keyboard_buttons = []
                     for u in users[:15]:
                         username_display = f"@{u[1]}" if u[1] else (u[2] or f"ID:{u[0]}")
                         keyboard_buttons.append([
-                            InlineKeyboardButton(f"🔗 {username_display}", callback_data=f"admin_user_links_{u[0]}"),
-                            InlineKeyboardButton(f"📨 Переписка", callback_data=f"admin_view_conversation_{u[0]}")
+                            InlineKeyboardButton(f"👤 {username_display}", callback_data=f"admin_user_manage_{u[0]}")
                         ])
                     
                     keyboard_buttons.append([InlineKeyboardButton("🔙 Назад", callback_data="admin_panel")])
@@ -955,56 +1064,202 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await query.edit_message_text("Пользователей не найдено\\.", parse_mode='MarkdownV2', reply_markup=admin_keyboard())
                 return
             
-            elif data.startswith("admin_user_links_"):
-                user_id_str = data.replace("admin_user_links_", "")
+            elif data.startswith("admin_user_manage_"):
+                user_id_str = data.replace("admin_user_manage_", "")
                 if user_id_str and user_id_str != "None":
                     user_id = safe_int(user_id_str)
-                    user_links = get_user_links_for_admin(user_id)
+                    user_info = run_query("SELECT username, first_name, is_banned FROM users WHERE user_id = ?", (user_id,), fetch="one")
                     
-                    if user_links:
-                        text = f"🔗 *Ссылки пользователя {user_id}:*\n\n"
-                        for link in user_links:
-                            created = format_datetime(link[3])
-                            text += f"📝 *{escape_markdown_v2(link[1])}*\n📋 {escape_markdown_v2(link[2])}\n🕒 `{created}` \\| 💬 Сообщений\\: {link[4]}\n\n"
+                    if user_info:
+                        username, first_name, is_banned = user_info
+                        user_display = f"@{username}" if username else (first_name or f"ID:{user_id}")
+                        status = "🚫 ЗАБЛОКИРОВАН" if is_banned else "✅ АКТИВЕН"
                         
-                        keyboard = InlineKeyboardMarkup([
-                            [InlineKeyboardButton("👁️ Посмотреть переписку", callback_data=f"admin_view_conversation_{user_id}")],
-                            [InlineKeyboardButton("🔙 Назад", callback_data="admin_users")]
-                        ])
+                        text = f"👤 *Управление пользователем*\n\n"
+                        text += f"*Информация:*\n"
+                        text += f"• ID\\: `{user_id}`\n"
+                        text += f"• Имя\\: {escape_markdown_v2(user_display)}\n"
+                        text += f"• Статус\\: {status}\n\n"
+                        text += f"*Доступные действия:*"
                         
-                        await query.edit_message_text(text, parse_mode='MarkdownV2', reply_markup=keyboard)
+                        await query.edit_message_text(text, parse_mode='MarkdownV2', reply_markup=user_management_keyboard(user_id))
                     else:
-                        await query.edit_message_text("У пользователя нет ссылок\\.", parse_mode='MarkdownV2', reply_markup=user_management_keyboard(user_id))
-                else:
-                    await query.answer("Ошибка: пользователь не найден", show_alert=True)
+                        await query.answer("Пользователь не найден", show_alert=True)
                 return
             
-            elif data.startswith("admin_view_conversation_"):
-                user_id_str = data.replace("admin_view_conversation_", "")
+            elif data.startswith("admin_ban_user_"):
+                user_id_str = data.replace("admin_ban_user_", "")
                 if user_id_str and user_id_str != "None":
                     user_id = safe_int(user_id_str)
-                    await query.edit_message_text("🔄 *Генерация отчета переписки\\.\\.\\.*", parse_mode='MarkdownV2')
-                    
-                    # Генерируем HTML отчет переписки
-                    html_content = generate_conversation_report(user_id)
-                    
-                    report_path = f"/tmp/conversation_{user_id}.html"
-                    with open(report_path, 'w', encoding='utf-8') as f:
-                        f.write(html_content)
-                    
-                    with open(report_path, 'rb') as f:
-                        await query.message.reply_document(
-                            document=f,
-                            filename=f"conversation_{user_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html",
-                            caption=f"💬 *Переписка пользователя {user_id}*",
-                            parse_mode='MarkdownV2'
-                        )
-                    
-                    await query.edit_message_text("✅ *Отчет переписки отправлен\\!*", parse_mode='MarkdownV2', reply_markup=user_management_keyboard(user_id))
-                else:
-                    await query.answer("Ошибка: пользователь не найден", show_alert=True)
+                    context.user_data['banning_user'] = user_id
+                    await query.edit_message_text(
+                        f"🚫 *Блокировка пользователя {user_id}*\n\nВведите причину блокировки \\(или нажмите отмена\\):",
+                        parse_mode='MarkdownV2',
+                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data=f"admin_user_manage_{user_id}")]])
+                    )
                 return
             
+            elif data.startswith("admin_unban_user_"):
+                user_id_str = data.replace("admin_unban_user_", "")
+                if user_id_str and user_id_str != "None":
+                    user_id = safe_int(user_id_str)
+                    success = unban_user(user_id)
+                    
+                    if success:
+                        # Пытаемся уведомить пользователя о разблокировке
+                        try:
+                            await context.bot.send_message(
+                                user_id, 
+                                "✅ *Ваша блокировка в боте снята\\!*\n\nТеперь вы снова можете использовать все функции бота\\.",
+                                parse_mode='MarkdownV2'
+                            )
+                        except:
+                            pass
+                        
+                        await query.edit_message_text(
+                            f"✅ *Пользователь {user_id} разблокирован\\!*",
+                            parse_mode='MarkdownV2',
+                            reply_markup=user_management_keyboard(user_id)
+                        )
+                    else:
+                        await query.answer("Ошибка при разблокировке пользователя", show_alert=True)
+                return
+            
+            elif data.startswith("admin_delete_user_"):
+                user_id_str = data.replace("admin_delete_user_", "")
+                if user_id_str and user_id_str != "None":
+                    user_id = safe_int(user_id_str)
+                    
+                    text = f"🗑️ *УДАЛЕНИЕ ПОЛЬЗОВАТЕЛЯ*\n\n"
+                    text += f"❓ *Вы уверены, что хотите полностью удалить пользователя {user_id}?*\n\n"
+                    text += "⚠️ *ВНИМАНИЕ\\! Это действие нельзя отменить\\!*\n"
+                    text += "• Все ссылки пользователя будут удалены\n"
+                    text += "• Все сообщения пользователя будут удалены\n"
+                    text += "• Все ответы пользователя будут удалены\n"
+                    text += "• Пользователь будет полностью удален из системы"
+                    
+                    keyboard = InlineKeyboardMarkup([
+                        [InlineKeyboardButton("✅ ДА, УДАЛИТЬ", callback_data=f"admin_confirm_delete_user_{user_id}")],
+                        [InlineKeyboardButton("❌ ОТМЕНА", callback_data=f"admin_user_manage_{user_id}")]
+                    ])
+                    
+                    await query.edit_message_text(text, parse_mode='MarkdownV2', reply_markup=keyboard)
+                return
+            
+            elif data.startswith("admin_confirm_delete_user_"):
+                user_id_str = data.replace("admin_confirm_delete_user_", "")
+                if user_id_str and user_id_str != "None":
+                    user_id = safe_int(user_id_str)
+                    success = delete_user(user_id)
+                    
+                    if success:
+                        await query.edit_message_text(
+                            f"✅ *Пользователь {user_id} и все его данные полностью удалены\\!*",
+                            parse_mode='MarkdownV2',
+                            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 К списку пользователей", callback_data="admin_users")]])
+                        )
+                    else:
+                        await query.answer("Ошибка при удалении пользователя", show_alert=True)
+                return
+            
+            elif data.startswith("admin_message_user_"):
+                user_id_str = data.replace("admin_message_user_", "")
+                if user_id_str and user_id_str != "None":
+                    user_id = safe_int(user_id_str)
+                    context.user_data['admin_messaging_user'] = user_id
+                    await query.edit_message_text(
+                        f"✉️ *Отправка сообщения пользователю {user_id}*\n\nВведите сообщение, которое будет отправлено от имени бота:",
+                        parse_mode='MarkdownV2',
+                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data=f"admin_user_manage_{user_id}")]])
+                    )
+                return
+            
+            elif data == "admin_sponsor_links":
+                await query.edit_message_text(
+                    "🔗 *Управление спонсорскими ссылками*\n\nСпонсорские ссылки могут быть созданы для любого пользователя и переданы им позже\\.",
+                    parse_mode='MarkdownV2',
+                    reply_markup=sponsor_links_keyboard()
+                )
+                return
+            
+            elif data == "admin_create_sponsor_link":
+                context.user_data['creating_sponsor_link'] = True
+                context.user_data['sponsor_stage'] = 'title'
+                await query.edit_message_text(
+                    "🔗 *Создание спонсорской ссылки*\n\nВведите *название* для спонсорской ссылки:",
+                    parse_mode='MarkdownV2',
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data="admin_sponsor_links")]])
+                )
+                return
+            
+            elif data == "admin_my_sponsor_links":
+                sponsor_links = get_sponsor_links(user.id)
+                if sponsor_links:
+                    text = "🔗 *Ваши спонсорские ссылки:*\n\n"
+                    for link in sponsor_links:
+                        link_id, title, description, created, target_user_id = link
+                        bot_username = context.bot.username
+                        link_url = f"https://t.me/{bot_username}?start={link_id}"
+                        created_str = format_datetime(created)
+                        text += f"📝 *{escape_markdown_v2(title)}*\n📋 {escape_markdown_v2(description)}\n👤 Владелец\\: `{target_user_id}`\n🔗 `{escape_markdown_v2(link_url)}`\n🕒 `{created_str}`\n\n"
+                    
+                    # Добавляем кнопки действий для каждой ссылки
+                    keyboard_buttons = []
+                    for link in sponsor_links:
+                        keyboard_buttons.append([InlineKeyboardButton(f"🔄 {link[1]}", callback_data=f"admin_sponsor_actions_{link[0]}")])
+                    
+                    keyboard_buttons.append([InlineKeyboardButton("🔙 Назад", callback_data="admin_sponsor_links")])
+                    keyboard = InlineKeyboardMarkup(keyboard_buttons)
+                    
+                    await query.edit_message_text(text, parse_mode='MarkdownV2', reply_markup=keyboard)
+                else:
+                    await query.edit_message_text(
+                        "У вас пока нет спонсорских ссылок\\.",
+                        parse_mode='MarkdownV2',
+                        reply_markup=sponsor_links_keyboard()
+                    )
+                return
+            
+            elif data.startswith("admin_sponsor_actions_"):
+                link_id = data.replace("admin_sponsor_actions_", "")
+                link_info = get_link_info(link_id)
+                
+                if link_info:
+                    text = f"🔗 *Управление спонсорской ссылкой*\n\n"
+                    text += f"*Название:* {escape_markdown_v2(link_info[2])}\n"
+                    text += f"*Описание:* {escape_markdown_v2(link_info[3])}\n"
+                    text += f"*ID ссылки:* `{link_id}`\n\n"
+                    text += f"*Доступные действия:*"
+                    
+                    await query.edit_message_text(text, parse_mode='MarkdownV2', reply_markup=sponsor_link_actions_keyboard(link_id))
+                else:
+                    await query.answer("Ссылка не найдена", show_alert=True)
+                return
+            
+            elif data.startswith("admin_transfer_sponsor_"):
+                link_id = data.replace("admin_transfer_sponsor_", "")
+                context.user_data['transferring_sponsor_link'] = link_id
+                await query.edit_message_text(
+                    f"🔄 *Передача спонсорской ссылки*\n\nВведите *ID пользователя*, которому хотите передать ссылку:",
+                    parse_mode='MarkdownV2',
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data=f"admin_sponsor_actions_{link_id}")]])
+                )
+                return
+            
+            elif data.startswith("admin_delete_sponsor_"):
+                link_id = data.replace("admin_delete_sponsor_", "")
+                success = delete_link_completely(link_id)
+                
+                if success:
+                    await query.edit_message_text(
+                        "✅ *Спонсорская ссылка успешно удалена\\!*",
+                        parse_mode='MarkdownV2',
+                        reply_markup=sponsor_links_keyboard()
+                    )
+                else:
+                    await query.answer("Ошибка при удалении ссылки", show_alert=True)
+                return
+
             elif data == "admin_html_report":
                 await query.edit_message_text("🔄 *Генерация HTML отчета\\.\\.\\.*", parse_mode='MarkdownV2')
                 
@@ -1118,6 +1373,57 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
                 return
 
+            # Оригинальные обработчики админ-панели
+            elif data.startswith("admin_user_links_"):
+                user_id_str = data.replace("admin_user_links_", "")
+                if user_id_str and user_id_str != "None":
+                    user_id = safe_int(user_id_str)
+                    user_links = get_user_links_for_admin(user_id)
+                    
+                    if user_links:
+                        text = f"🔗 *Ссылки пользователя {user_id}:*\n\n"
+                        for link in user_links:
+                            created = format_datetime(link[3])
+                            text += f"📝 *{escape_markdown_v2(link[1])}*\n📋 {escape_markdown_v2(link[2])}\n🕒 `{created}` \\| 💬 Сообщений\\: {link[4]}\n\n"
+                        
+                        keyboard = InlineKeyboardMarkup([
+                            [InlineKeyboardButton("👁️ Посмотреть переписку", callback_data=f"admin_view_conversation_{user_id}")],
+                            [InlineKeyboardButton("🔙 Назад", callback_data=f"admin_user_manage_{user_id}")]
+                        ])
+                        
+                        await query.edit_message_text(text, parse_mode='MarkdownV2', reply_markup=keyboard)
+                    else:
+                        await query.edit_message_text("У пользователя нет ссылок\\.", parse_mode='MarkdownV2', reply_markup=user_management_keyboard(user_id))
+                else:
+                    await query.answer("Ошибка: пользователь не найден", show_alert=True)
+                return
+            
+            elif data.startswith("admin_view_conversation_"):
+                user_id_str = data.replace("admin_view_conversation_", "")
+                if user_id_str and user_id_str != "None":
+                    user_id = safe_int(user_id_str)
+                    await query.edit_message_text("🔄 *Генерация отчета переписки\\.\\.\\.*", parse_mode='MarkdownV2')
+                    
+                    # Генерируем HTML отчет переписки
+                    html_content = generate_conversation_report(user_id)
+                    
+                    report_path = f"/tmp/conversation_{user_id}.html"
+                    with open(report_path, 'w', encoding='utf-8') as f:
+                        f.write(html_content)
+                    
+                    with open(report_path, 'rb') as f:
+                        await query.message.reply_document(
+                            document=f,
+                            filename=f"conversation_{user_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html",
+                            caption=f"💬 *Переписка пользователя {user_id}*",
+                            parse_mode='MarkdownV2'
+                        )
+                    
+                    await query.edit_message_text("✅ *Отчет переписки отправлен\\!*", parse_mode='MarkdownV2', reply_markup=user_management_keyboard(user_id))
+                else:
+                    await query.answer("Ошибка: пользователь не найден", show_alert=True)
+                return
+
     except Exception as e:
         logging.error(f"Ошибка в обработчике кнопок: {e}")
         try:
@@ -1128,6 +1434,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         user = update.effective_user
+        
+        # Проверяем, не забанен ли пользователь
+        if is_user_banned(user.id):
+            await update.message.reply_text("❌ Вы заблокированы в этом боте и не можете использовать его функции.")
+            return
+        
         text = update.message.text
         save_user(user.id, user.username, user.first_name)
         is_admin = user.username == ADMIN_USERNAME or user.id == ADMIN_ID
@@ -1137,6 +1449,121 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.delete()
         except:
             pass
+
+        # Обработка блокировки пользователя
+        if context.user_data.get('banning_user'):
+            user_id = context.user_data.pop('banning_user')
+            success = ban_user(user_id, text)
+            
+            if success:
+                # Пытаемся уведомить пользователя о блокировке
+                try:
+                    ban_message = f"🚫 *Вы были заблокированы в боте*\n\n*Причина:* {text}\n\nЕсли вы считаете, что это ошибка, свяжитесь с администратором\\."
+                    await context.bot.send_message(user_id, ban_message, parse_mode='MarkdownV2')
+                except:
+                    pass
+                
+                await update.message.reply_text(
+                    f"✅ *Пользователь {user_id} заблокирован\\!*\n*Причина:* {text}",
+                    parse_mode='MarkdownV2',
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=f"admin_user_manage_{user_id}")]])
+                )
+            else:
+                await update.message.reply_text("❌ Ошибка при блокировке пользователя")
+            return
+
+        # Обработка отправки сообщения от имени бота
+        if context.user_data.get('admin_messaging_user'):
+            target_user_id = context.user_data.pop('admin_messaging_user')
+            
+            try:
+                # Отправляем сообщение пользователю
+                await context.bot.send_message(
+                    target_user_id, 
+                    f"📢 *Сообщение от администратора*\n\n{text}",
+                    parse_mode='MarkdownV2'
+                )
+                
+                # Сохраняем в историю
+                save_admin_message(user.id, target_user_id, text)
+                
+                await update.message.reply_text(
+                    f"✅ *Сообщение отправлено пользователю {target_user_id}\\!*",
+                    parse_mode='MarkdownV2',
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=f"admin_user_manage_{target_user_id}")]])
+                )
+            except Exception as e:
+                logging.error(f"Ошибка отправки сообщения пользователю {target_user_id}: {e}")
+                await update.message.reply_text(
+                    f"❌ *Не удалось отправить сообщение пользователю {target_user_id}*\n\nВозможно, пользователь заблокировал бота\\.",
+                    parse_mode='MarkdownV2'
+                )
+            return
+
+        # Обработка передачи спонсорской ссылки
+        if context.user_data.get('transferring_sponsor_link'):
+            link_id = context.user_data.pop('transferring_sponsor_link')
+            try:
+                new_user_id = int(text)
+                success = transfer_sponsor_link(link_id, new_user_id)
+                
+                if success:
+                    await update.message.reply_text(
+                        f"✅ *Спонсорская ссылка передана пользователю {new_user_id}\\!*",
+                        parse_mode='MarkdownV2',
+                        reply_markup=sponsor_links_keyboard()
+                    )
+                else:
+                    await update.message.reply_text("❌ Ошибка при передаче ссылки")
+            except ValueError:
+                await update.message.reply_text("❌ Неверный формат ID пользователя\\. Введите числовой ID\\.")
+            return
+
+        # Обработка создания спонсорской ссылки
+        if context.user_data.get('creating_sponsor_link'):
+            stage = context.user_data.get('sponsor_stage')
+            
+            if stage == 'title':
+                context.user_data['sponsor_title'] = text
+                context.user_data['sponsor_stage'] = 'description'
+                await update.message.reply_text(
+                    "📋 Введите *описание* для спонсорской ссылки:",
+                    parse_mode='MarkdownV2',
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data="admin_sponsor_links")]])
+                )
+            elif stage == 'description':
+                context.user_data['sponsor_description'] = text
+                context.user_data['sponsor_stage'] = 'target_user'
+                await update.message.reply_text(
+                    "👤 Введите *ID пользователя* для спонсорской ссылки \\(или 0 для создания без привязки\\):",
+                    parse_mode='MarkdownV2',
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data="admin_sponsor_links")]])
+                )
+            elif stage == 'target_user':
+                title = context.user_data.pop('sponsor_title')
+                description = context.user_data.pop('sponsor_description')
+                context.user_data.pop('creating_sponsor_link')
+                context.user_data.pop('sponsor_stage')
+                
+                try:
+                    target_user_id = int(text) if text != '0' else None
+                    link_id = create_sponsor_link(user.id, title, description, target_user_id)
+                    
+                    bot_username = context.bot.username
+                    link_url = f"https://t.me/{bot_username}?start={link_id}"
+                    
+                    await update.message.reply_text(
+                        f"✅ *Спонсорская ссылка создана\\!*\n\n"
+                        f"📝 *{escape_markdown_v2(title)}*\n"
+                        f"📋 {escape_markdown_v2(description)}\n"
+                        f"👤 Владелец\\: `{target_user_id or 'Не назначен'}`\n\n"
+                        f"🔗 `{escape_markdown_v2(link_url)}`",
+                        parse_mode='MarkdownV2',
+                        reply_markup=sponsor_links_keyboard()
+                    )
+                except ValueError:
+                    await update.message.reply_text("❌ Неверный формат ID пользователя\\. Введите числовой ID или 0\\.")
+            return
 
         # Ответ на сообщение
         if context.user_data.get('replying_to'):
@@ -1222,6 +1649,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         user = update.effective_user
+        
+        # Проверяем, не забанен ли пользователь
+        if is_user_banned(user.id):
+            await update.message.reply_text("❌ Вы заблокированы в этом боте и не можете использовать его функции.")
+            return
+            
         save_user(user.id, user.username, user.first_name)
         msg = update.message
         caption = msg.caption or ""
@@ -1617,202 +2050,14 @@ def generate_beautiful_html_report():
                 background: rgba(255, 255, 255, 0.05);
             }}
             
-            /* Новые стили для детальной информации */
-            .conversation-grid {{
-                display: grid;
-                grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
-                gap: 25px;
-                margin-bottom: 40px;
+            .user-banned {{
+                color: #ff6b6b;
+                font-weight: bold;
             }}
             
-            .conversation-card {{
-                background: linear-gradient(135deg, rgba(255, 255, 255, 0.1) 0%, rgba(255, 255, 255, 0.05) 100%);
-                backdrop-filter: blur(15px);
-                padding: 25px;
-                border-radius: 20px;
-                border: 1px solid rgba(255, 255, 255, 0.1);
-                transition: all 0.3s ease;
-                position: relative;
-                overflow: hidden;
-            }}
-            
-            .conversation-card:hover {{
-                transform: translateY(-8px) scale(1.02);
-                box-shadow: 0 15px 35px rgba(0, 0, 0, 0.4);
-                border-color: rgba(184, 77, 255, 0.3);
-            }}
-            
-            .conversation-card::before {{
-                content: '';
-                position: absolute;
-                top: 0;
-                left: 0;
-                right: 0;
-                height: 3px;
-                background: linear-gradient(90deg, #b84dff, #6c43ff, #ff47d6);
-            }}
-            
-            .link-title {{
-                font-weight: 800;
-                font-size: 1.3em;
-                color: #ffd700;
-                margin-bottom: 10px;
-            }}
-            
-            .link-description {{
-                color: #e0e0ff;
-                margin-bottom: 15px;
-                line-height: 1.4;
-            }}
-            
-            .link-info {{
-                display: flex;
-                justify-content: space-between;
-                margin-bottom: 10px;
-                font-size: 0.9em;
-            }}
-            
-            .link-owner {{
-                color: #a78bfa;
-                font-weight: 600;
-            }}
-            
-            .message-count {{
-                background: linear-gradient(135deg, #ffd700 0%, #ff6b6b 50%, #b84dff 100%);
-                -webkit-background-clip: text;
-                -webkit-text-fill-color: transparent;
-                background-clip: text;
-                font-weight: 800;
-                font-size: 1.1em;
-            }}
-            
-            .timestamp {{
-                color: #a0a0ff;
-                font-size: 0.8em;
-            }}
-            
-            .link-id {{
-                background: rgba(255, 255, 255, 0.1);
-                padding: 5px 10px;
-                border-radius: 8px;
-                font-family: monospace;
-                font-size: 0.8em;
-                margin-top: 10px;
-                display: inline-block;
-            }}
-            
-            .message-card {{
-                background: linear-gradient(135deg, rgba(255, 255, 255, 0.08) 0%, rgba(255, 255, 255, 0.03) 100%);
-                backdrop-filter: blur(15px);
-                padding: 25px;
-                border-radius: 20px;
-                margin-bottom: 20px;
-                border: 1px solid rgba(255, 255, 255, 0.1);
-                transition: all 0.3s ease;
-                position: relative;
-                overflow: hidden;
-            }}
-            
-            .message-card:hover {{
-                transform: translateX(10px);
-                background: rgba(255, 255, 255, 0.12);
-                border-color: rgba(184, 77, 255, 0.3);
-            }}
-            
-            .message-card::before {{
-                content: '';
-                position: absolute;
-                top: 0;
-                left: 0;
-                right: 0;
-                height: 3px;
-                background: linear-gradient(90deg, #b84dff, #6c43ff, #ff47d6);
-            }}
-            
-            .message-header {{
-                display: flex;
-                justify-content: space-between;
-                align-items: flex-start;
-                margin-bottom: 15px;
-                flex-wrap: wrap;
-                gap: 10px;
-            }}
-            
-            .message-type {{
-                background: linear-gradient(135deg, #ffd700 0%, #ff6b6b 50%, #b84dff 100%);
-                -webkit-background-clip: text;
-                -webkit-text-fill-color: transparent;
-                background-clip: text;
-                font-weight: 800;
-                font-size: 1.1em;
-                text-transform: uppercase;
-            }}
-            
-            .message-content {{
-                color: #e0e0ff;
-                line-height: 1.5;
-                margin-bottom: 15px;
-                background: rgba(255, 255, 255, 0.05);
-                padding: 15px;
-                border-radius: 10px;
-                border-left: 3px solid #b84dff;
-            }}
-            
-            .message-info {{
-                display: grid;
-                grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-                gap: 10px;
-                margin-bottom: 15px;
-            }}
-            
-            .info-item {{
-                background: rgba(255, 255, 255, 0.05);
-                padding: 10px;
-                border-radius: 8px;
-                text-align: center;
-            }}
-            
-            .info-label {{
-                font-size: 0.8em;
-                color: #a78bfa;
-                margin-bottom: 5px;
-            }}
-            
-            .info-value {{
-                font-weight: 600;
-                color: #ffd700;
-            }}
-            
-            .user-info {{
-                display: flex;
-                justify-content: space-between;
-                margin-top: 15px;
-                padding-top: 15px;
-                border-top: 1px solid rgba(255, 255, 255, 0.1);
-            }}
-            
-            .user-from, .user-to {{
-                flex: 1;
-                text-align: center;
-            }}
-            
-            .user-label {{
-                font-size: 0.8em;
-                color: #a78bfa;
-                margin-bottom: 5px;
-            }}
-            
-            .user-name {{
-                font-weight: 600;
-                color: #e0e0ff;
-            }}
-            
-            .media-details {{
-                background: rgba(184, 77, 255, 0.1);
-                padding: 10px;
-                border-radius: 8px;
-                margin: 10px 0;
-                border-left: 3px solid #b84dff;
+            .user-active {{
+                color: #4ade80;
+                font-weight: bold;
             }}
             
             .footer {{
@@ -1851,9 +2096,21 @@ def generate_beautiful_html_report():
                     <p>👥 Всего пользователей</p>
                 </div>
                 <div class="stat-card">
+                    <h3>{data['stats']['banned']}</h3>
+                    <p>🚫 Заблокированных</p>
+                </div>
+                <div class="stat-card">
                     <h3>{data['stats']['links']}</h3>
                     <p>🔗 Активных ссылок</p>
                 </div>
+                <div class="stat-card">
+                    <h3>{data['stats']['sponsor_links']}</h3>
+                    <p>🎁 Спонсорских ссылок</p>
+                </div>
+            </div>
+            
+            <!-- Статистика сообщений -->
+            <div class="stats-grid">
                 <div class="stat-card">
                     <h3>{data['stats']['messages']}</h3>
                     <p>📨 Всего сообщений</p>
@@ -1862,10 +2119,6 @@ def generate_beautiful_html_report():
                     <h3>{data['stats']['replies']}</h3>
                     <p>💬 Ответов</p>
                 </div>
-            </div>
-            
-            <!-- Статистика файлов -->
-            <div class="stats-grid">
                 <div class="stat-card">
                     <h3>{data['stats']['photos']}</h3>
                     <p>🖼️ Фотографий</p>
@@ -1874,125 +2127,6 @@ def generate_beautiful_html_report():
                     <h3>{data['stats']['videos']}</h3>
                     <p>🎥 Видео</p>
                 </div>
-                <div class="stat-card">
-                    <h3>{data['stats']['documents']}</h3>
-                    <p>📄 Документов</p>
-                </div>
-                <div class="stat-card">
-                    <h3>{data['stats']['voice']}</h3>
-                    <p>🎤 Голосовых</p>
-                </div>
-            </div>
-            
-            <!-- Все переписки -->
-            <div class="section">
-                <h2>💬 ВСЕ АКТИВНЫЕ ПЕРЕПИСКИ</h2>
-                <div class="conversation-grid">
-    '''
-    
-    if data['conversations']:
-        for conv in data['conversations'][:12]:  # Ограничиваем до 12 карточек
-            owner = f"@{conv[4]}" if conv[4] else (html.escape(conv[5]) if conv[5] else f"ID:{conv[6]}")
-            last_activity = format_datetime(conv[7]) if conv[7] else "Нет активности"
-            
-            html_content += f'''
-                    <div class="conversation-card">
-                        <div class="link-title">{html.escape(conv[1])}</div>
-                        <div class="link-description">{html.escape(conv[2])}</div>
-                        <div class="link-info">
-                            <span class="link-owner">👤 {owner}</span>
-                            <span class="message-count">💬 {conv[3]} сообщ.</span>
-                        </div>
-                        <div class="timestamp">🕒 Создана: {format_datetime(conv[3])}</div>
-                        <div class="timestamp">📅 Активность: {last_activity}</div>
-                        <div class="link-id">🔗 ID: {conv[0]}</div>
-                    </div>
-            '''
-    else:
-        html_content += '<div class="conversation-card"><div class="link-title">Нет активных переписок</div></div>'
-    
-    html_content += '''
-                </div>
-            </div>
-            
-            <!-- Детальная информация о сообщениях -->
-            <div class="section">
-                <h2>📨 ПОСЛЕДНИЕ СООБЩЕНИЯ И МЕДИА</h2>
-    '''
-    
-    if data['detailed_messages']:
-        for msg in data['detailed_messages'][:10]:  # Ограничиваем до 10 сообщений
-            message_id, message_text, message_type, file_size, file_name, created, from_username, from_first_name, from_user_id, to_username, to_first_name, to_user_id, link_title, link_id, reply_count = msg
-            
-            type_icon = {
-                "text": "📝 ТЕКСТ",
-                "photo": "🖼️ ФОТО", 
-                "video": "🎥 ВИДЕО",
-                "document": "📄 ДОКУМЕНТ",
-                "voice": "🎤 ГОЛОСОВОЕ"
-            }.get(message_type, "📄 ФАЙЛ")
-            
-            from_user = f"@{from_username}" if from_username else (from_first_name or f"ID:{from_user_id}")
-            to_user = f"@{to_username}" if to_username else (to_first_name or f"ID:{to_user_id}")
-            
-            media_info = ""
-            if message_type != 'text':
-                file_size_display = f"{(file_size or 0) // 1024} KB" if file_size else "Неизвестно"
-                media_info = f'''
-                <div class="media-details">
-                    <div><strong>Тип файла:</strong> {message_type.upper()}</div>
-                    <div><strong>Размер:</strong> {file_size_display}</div>
-                    <div><strong>Имя файла:</strong> {file_name or 'Без названия'}</div>
-                </div>
-                '''
-            
-            html_content += f'''
-                <div class="message-card">
-                    <div class="message-header">
-                        <span class="message-type">{type_icon}</span>
-                        <span style="color: #ff6b6b; font-weight: 600;">💬 Ответов: {reply_count}</span>
-                    </div>
-                    
-                    <div class="message-content">
-                        {html.escape(message_text) if message_text else '📁 Медиафайл'}
-                        {media_info}
-                    </div>
-                    
-                    <div class="message-info">
-                        <div class="info-item">
-                            <div class="info-label">Ссылка</div>
-                            <div class="info-value">{html.escape(link_title)}</div>
-                        </div>
-                        <div class="info-item">
-                            <div class="info-label">ID Ссылки</div>
-                            <div class="info-value">{link_id}</div>
-                        </div>
-                        <div class="info-item">
-                            <div class="info-label">ID Сообщения</div>
-                            <div class="info-value">#{message_id}</div>
-                        </div>
-                    </div>
-                    
-                    <div class="user-info">
-                        <div class="user-from">
-                            <div class="user-label">👤 Отправитель</div>
-                            <div class="user-name">{html.escape(from_user)}</div>
-                            <div class="timestamp">ID: {from_user_id}</div>
-                        </div>
-                        <div class="user-to">
-                            <div class="user-label">🎯 Получатель</div>
-                            <div class="user-name">{html.escape(to_user)}</div>
-                            <div class="timestamp">ID: {to_user_id}</div>
-                        </div>
-                    </div>
-                    
-                    <div class="timestamp">🕒 Отправлено: {format_datetime(created)}</div>
-                </div>
-            '''
-    else:
-        html_content += '<div class="message-card"><div class="message-content">Нет сообщений</div></div>'
-    
-    html_content += '''
             </div>
             
             <!-- Пользователи -->
@@ -2004,7 +2138,7 @@ def generate_beautiful_html_report():
                             <th>ID</th>
                             <th>Информация</th>
                             <th>Регистрация</th>
-                            <th>Активность</th>
+                            <th>Статус</th>
                             <th>Статистика</th>
                         </tr>
                     </thead>
@@ -2013,13 +2147,14 @@ def generate_beautiful_html_report():
     
     for user in data['users'][:20]:
         username_display = f"@{user[1]}" if user[1] else (html.escape(user[2]) if user[2] else f"ID:{user[0]}")
+        status = f'<span class="user-banned">🚫 ЗАБЛОКИРОВАН</span>' if user[4] else f'<span class="user-active">✅ АКТИВЕН</span>'
         html_content += f'''
                         <tr>
                             <td><strong>{user[0]}</strong></td>
                             <td>{username_display}</td>
                             <td>{user[3].split()[0] if isinstance(user[3], str) else user[3].strftime("%Y-%m-%d")}</td>
-                            <td>{user[4]} ссылок</td>
-                            <td>📨 {user[5]} | 📤 {user[6]}</td>
+                            <td>{status}</td>
+                            <td>🔗 {user[5]} | 📨 {user[6]} | 📤 {user[7]}</td>
                         </tr>
         '''
     
@@ -2037,6 +2172,7 @@ def generate_beautiful_html_report():
                             <th>ID Ссылки</th>
                             <th>Название</th>
                             <th>Владелец</th>
+                            <th>Тип</th>
                             <th>Сообщения</th>
                             <th>Создана</th>
                         </tr>
@@ -2045,14 +2181,61 @@ def generate_beautiful_html_report():
     '''
     
     for link in data['links'][:25]:
-        owner = f"@{link[5]}" if link[5] else (html.escape(link[6]) if link[6] else f"ID:{link[7]}")
+        owner = f"@{link[6]}" if link[6] else (html.escape(link[7]) if link[7] else f"ID:{link[8]}")
+        link_type = "🎁 СПОНСОР" if link[5] else "🔗 ОБЫЧНАЯ"
         html_content += f'''
                         <tr>
                             <td><code>{link[0]}</code></td>
                             <td>{html.escape(link[1])}</td>
                             <td>{owner}</td>
-                            <td>{link[8]} сообщ.</td>
+                            <td>{link_type}</td>
+                            <td>{link[9]} сообщ.</td>
                             <td>{link[3].split()[0] if isinstance(link[3], str) else link[3].strftime("%Y-%m-%d")}</td>
+                        </tr>
+        '''
+    
+    html_content += '''
+                    </tbody>
+                </table>
+            </div>
+            
+            <!-- Последние сообщения -->
+            <div class="section">
+                <h2>📨 ПОСЛЕДНИЕ СООБЩЕНИЯ</h2>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Тип</th>
+                            <th>Отправитель</th>
+                            <th>Получатель</th>
+                            <th>Ссылка</th>
+                            <th>Дата</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+    '''
+    
+    for msg in data['recent_messages'][:15]:
+        msg_type_icon = {
+            "text": "📝",
+            "photo": "🖼️", 
+            "video": "🎥",
+            "document": "📄",
+            "voice": "🎤"
+        }.get(msg[2], "📄")
+        
+        from_user = f"@{msg[6]}" if msg[6] else (html.escape(msg[7]) if msg[7] else f"ID:{msg[8]}")
+        to_user = f"@{msg[9]}" if msg[9] else (html.escape(msg[10]) if msg[10] else f"ID:{msg[11]}")
+        
+        html_content += f'''
+                        <tr>
+                            <td>#{msg[0]}</td>
+                            <td>{msg_type_icon}</td>
+                            <td>{from_user}</td>
+                            <td>{to_user}</td>
+                            <td>{html.escape(msg[12])}</td>
+                            <td>{msg[5].split()[0] if isinstance(msg[5], str) else msg[5].strftime("%Y-%m-%d")}</td>
                         </tr>
         '''
     
