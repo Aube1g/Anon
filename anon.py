@@ -106,6 +106,7 @@ def init_db():
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         
+        # Создаем таблицу пользователей с нужными колонками
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS users (
                 user_id INTEGER PRIMARY KEY, 
@@ -117,6 +118,7 @@ def init_db():
             )
         ''')
         
+        # Создаем таблицу ссылок с нужными колонками
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS links (
                 link_id TEXT PRIMARY KEY, 
@@ -128,6 +130,7 @@ def init_db():
                 is_active BOOLEAN DEFAULT 1,
                 is_sponsor BOOLEAN DEFAULT 0,
                 sponsor_owner_id INTEGER DEFAULT NULL,
+                custom_id TEXT DEFAULT NULL,
                 FOREIGN KEY (user_id) REFERENCES users (user_id)
             )
         ''')
@@ -201,11 +204,19 @@ def save_user(user_id, username, first_name):
     run_query('INSERT OR IGNORE INTO users (user_id, username, first_name) VALUES (?, ?, ?)', 
               (user_id, username, first_name), commit=True)
 
-def create_anon_link(user_id, title, description, is_sponsor=False, sponsor_owner_id=None):
-    link_id = ''.join(secrets.choice(string.ascii_letters + string.digits) for _ in range(10))
+def create_anon_link(user_id, title, description, is_sponsor=False, sponsor_owner_id=None, custom_id=None):
+    if custom_id:
+        # Проверяем, не занят ли кастомный ID
+        existing = run_query('SELECT link_id FROM links WHERE link_id = ?', (custom_id,), fetch="one")
+        if existing:
+            return None  # ID уже занят
+        link_id = custom_id
+    else:
+        link_id = ''.join(secrets.choice(string.ascii_letters + string.digits) for _ in range(10))
+    
     expires_at = datetime.now() + timedelta(days=365)
-    run_query('INSERT INTO links (link_id, user_id, title, description, expires_at, is_sponsor, sponsor_owner_id) VALUES (?, ?, ?, ?, ?, ?, ?)', 
-              (link_id, user_id, title, description, expires_at, is_sponsor, sponsor_owner_id), commit=True)
+    run_query('INSERT INTO links (link_id, user_id, title, description, expires_at, is_sponsor, sponsor_owner_id, custom_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', 
+              (link_id, user_id, title, description, expires_at, is_sponsor, sponsor_owner_id, custom_id), commit=True)
     push_db_to_github(f"Create link for user {user_id}")
     return link_id
 
@@ -367,12 +378,13 @@ def get_admin_stats():
         stats['videos'] = run_query("SELECT COUNT(*) FROM messages WHERE message_type = 'video' AND is_active = 1", fetch="one")[0] or 0
         stats['documents'] = run_query("SELECT COUNT(*) FROM messages WHERE message_type = 'document' AND is_active = 1", fetch="one")[0] or 0
         stats['voice'] = run_query("SELECT COUNT(*) FROM messages WHERE message_type = 'voice' AND is_active = 1", fetch="one")[0] or 0
+        stats['video_note'] = run_query("SELECT COUNT(*) FROM messages WHERE message_type = 'video_note' AND is_active = 1", fetch="one")[0] or 0
         
         stats['banned'] = run_query("SELECT COUNT(*) FROM users WHERE is_banned = 1", fetch="one")[0] or 0
         stats['sponsor_links'] = run_query("SELECT COUNT(*) FROM links WHERE is_sponsor = 1", fetch="one")[0] or 0
     except Exception as e:
         logging.error(f"Ошибка при получении статистики: {e}")
-        stats = {'users': 0, 'links': 0, 'messages': 0, 'replies': 0, 'photos': 0, 'videos': 0, 'documents': 0, 'voice': 0, 'banned': 0, 'sponsor_links': 0}
+        stats = {'users': 0, 'links': 0, 'messages': 0, 'replies': 0, 'photos': 0, 'videos': 0, 'documents': 0, 'voice': 0, 'video_note': 0, 'banned': 0, 'sponsor_links': 0}
     
     return stats
 
@@ -418,13 +430,13 @@ def is_user_banned(user_id):
     result = run_query('SELECT is_banned FROM users WHERE user_id = ?', (user_id,), fetch="one")
     return result and result[0] == 1
 
-def create_sponsor_link(admin_id, title, description, target_user_id=None):
+def create_sponsor_link(admin_id, title, description, target_user_id=None, custom_id=None):
     """Создает спонсорскую ссылку"""
-    return create_anon_link(target_user_id or admin_id, title, description, is_sponsor=True, sponsor_owner_id=admin_id)
+    return create_anon_link(target_user_id or admin_id, title, description, is_sponsor=True, sponsor_owner_id=admin_id, custom_id=custom_id)
 
 def get_sponsor_links(admin_id):
     """Получает спонсорские ссылки админа"""
-    return run_query('SELECT link_id, title, description, created_at, user_id FROM links WHERE is_sponsor = 1 AND sponsor_owner_id = ?', (admin_id,), fetch="all")
+    return run_query('SELECT link_id, title, description, created_at, user_id, custom_id FROM links WHERE is_sponsor = 1 AND sponsor_owner_id = ?', (admin_id,), fetch="all")
 
 def transfer_sponsor_link(link_id, new_user_id):
     """Передает спонсорскую ссылку другому пользователю"""
@@ -727,18 +739,6 @@ def broadcast_formatting_keyboard():
     """Клавиатура форматирования для рассылки"""
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("Жирный **текст**", callback_data="format_bold"),
-            InlineKeyboardButton("Курсив *текст*", callback_data="format_italic")
-        ],
-        [
-            InlineKeyboardButton("Зачеркивание ~~текст~~", callback_data="format_strike"),
-            InlineKeyboardButton("Скрытый ||текст||", callback_data="format_spoiler")
-        ],
-        [
-            InlineKeyboardButton("Моноширинный `текст`", callback_data="format_code"),
-            InlineKeyboardButton("Цитата >>текст", callback_data="format_quote")
-        ],
-        [
             InlineKeyboardButton("✅ Отправить", callback_data="broadcast_send"),
             InlineKeyboardButton("❌ Отмена", callback_data="admin_panel")
         ]
@@ -867,7 +867,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 for msg in messages:
                     msg_id, msg_text, msg_type, file_id, file_size, file_name, created, link_title, link_id, reply_count = msg
                     
-                    type_icon = {"text": "📝", "photo": "🖼️", "video": "🎥", "document": "📄", "voice": "🎤"}.get(msg_type, "📄")
+                    type_icon = {"text": "📝", "photo": "🖼️", "video": "🎥", "document": "📄", "voice": "🎤", "video_note": "⭕️"}.get(msg_type, "📄")
                     
                     preview = safe_str(msg_text) or f"*{msg_type}*"
                     if len(preview) > 50:
@@ -1032,7 +1032,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 • Фотографий\\: {stats['photos']}
 • Видео\\: {stats['videos']}
 • Документов\\: {stats['documents']}
-• Голосовых\\: {stats['voice']}"""
+• Голосовых\\: {stats['voice']}
+• Кружков\\: {stats['video_note']}"""
                 await query.edit_message_text(text, parse_mode='MarkdownV2', reply_markup=admin_keyboard())
                 return
             
@@ -1197,11 +1198,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if sponsor_links:
                     text = "🔗 *Ваши спонсорские ссылки:*\n\n"
                     for link in sponsor_links:
-                        link_id, title, description, created, target_user_id = link
+                        link_id, title, description, created, target_user_id, custom_id = link
                         bot_username = context.bot.username
                         link_url = f"https://t.me/{bot_username}?start={link_id}"
                         created_str = format_datetime(created)
-                        text += f"📝 *{escape_markdown_v2(title)}*\n📋 {escape_markdown_v2(description)}\n👤 Владелец\\: `{target_user_id}`\n🔗 `{escape_markdown_v2(link_url)}`\n🕒 `{created_str}`\n\n"
+                        custom_info = f"\n🆔 Кастомный ID: `{custom_id}`" if custom_id else ""
+                        text += f"📝 *{escape_markdown_v2(title)}*\n📋 {escape_markdown_v2(description)}\n👤 Владелец\\: `{target_user_id}`{custom_info}\n🔗 `{escape_markdown_v2(link_url)}`\n🕒 `{created_str}`\n\n"
                     
                     # Добавляем кнопки действий для каждой ссылки
                     keyboard_buttons = []
@@ -1284,48 +1286,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 context.user_data['broadcasting'] = True
                 context.user_data['broadcast_message'] = ""
                 await query.edit_message_text(
-                    "📢 *Режим рассылки*\n\n"
-                    "💡 *Доступные форматы:*\n"
-                    "• **Жирный** текст\n" 
-                    "• *Курсив* текст\n"
-                    "• ~~Зачеркивание~~\n"
-                    "• Скрытый текст\n"
-                    "• `Моноширинный`\n"
-                    "• Цитата\n\n"
-                    "Введите сообщение для рассылки:",
+                    "📢 *Режим рассылки*\n\nВведите сообщение для рассылки всем пользователям:",
                     parse_mode='MarkdownV2', 
                     reply_markup=broadcast_formatting_keyboard()
                 )
-                return
-            
-            # Обработка форматирования рассылки
-            elif data.startswith("format_"):
-                if context.user_data.get('broadcasting'):
-                    format_type = data.replace("format_", "")
-                    current_text = context.user_data.get('broadcast_message', '')
-                    
-                    format_examples = {
-                        'bold': '**жирный текст**',
-                        'italic': '*курсив*', 
-                        'strike': '~~зачеркнутый~~',
-                        'spoiler': '||скрытый текст||',
-                        'code': '`моноширинный`',
-                        'quote': '>>цитата'
-                    }
-                    
-                    example = format_examples.get(format_type, '')
-                    new_text = current_text + example
-                    context.user_data['broadcast_message'] = new_text
-                    
-                    # Простой предпросмотр без сложного форматирования
-                    preview_text = new_text
-                    
-                    await query.edit_message_text(
-                        f"📢 *Сообщение для рассылки:*\n\n{preview_text}\n\n"
-                        "Используйте кнопки для добавления форматирования или введите текст:",
-                        parse_mode=None,  # Отключаем форматирование для предпросмотра
-                        reply_markup=broadcast_formatting_keyboard()
-                    )
                 return
             
             elif data == "broadcast_send":
@@ -1339,11 +1303,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     context.user_data.pop('broadcast_message', None)
                     
                     # Простое форматирование для рассылки
-                    try:
-                        formatted_text = parse_formatting(message_text.strip())
-                    except Exception as e:
-                        logging.error(f"Ошибка форматирования рассылки: {e}")
-                        formatted_text = message_text.strip()
+                    formatted_text = message_text.strip()
                     
                     users = get_all_users_for_admin()
                     success_count = 0
@@ -1356,7 +1316,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             await context.bot.send_message(
                                 u[0], 
                                 f"📢 *Оповещение от администратора*\n\n{formatted_text}", 
-                                parse_mode='HTML'
+                                parse_mode='MarkdownV2'
                             )
                             success_count += 1
                             await asyncio.sleep(0.1)
@@ -1533,6 +1493,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             elif stage == 'description':
                 context.user_data['sponsor_description'] = text
+                context.user_data['sponsor_stage'] = 'custom_id'
+                await update.message.reply_text(
+                    "🆔 Введите *кастомный ID* для спонсорской ссылки \\(или оставьте пустым для автоматической генерации\\):",
+                    parse_mode='MarkdownV2',
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data="admin_sponsor_links")]])
+                )
+            elif stage == 'custom_id':
+                context.user_data['sponsor_custom_id'] = text if text.strip() else None
                 context.user_data['sponsor_stage'] = 'target_user'
                 await update.message.reply_text(
                     "👤 Введите *ID пользователя* для спонсорской ссылки \\(или 0 для создания без привязки\\):",
@@ -1542,21 +1510,31 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             elif stage == 'target_user':
                 title = context.user_data.pop('sponsor_title')
                 description = context.user_data.pop('sponsor_description')
+                custom_id = context.user_data.pop('sponsor_custom_id', None)
                 context.user_data.pop('creating_sponsor_link')
                 context.user_data.pop('sponsor_stage')
                 
                 try:
                     target_user_id = int(text) if text != '0' else None
-                    link_id = create_sponsor_link(user.id, title, description, target_user_id)
+                    link_id = create_sponsor_link(user.id, title, description, target_user_id, custom_id)
+                    
+                    if link_id is None:
+                        await update.message.reply_text(
+                            "❌ *Кастомный ID уже занят\\!* Попробуйте другой ID\\.",
+                            parse_mode='MarkdownV2',
+                            reply_markup=sponsor_links_keyboard()
+                        )
+                        return
                     
                     bot_username = context.bot.username
                     link_url = f"https://t.me/{bot_username}?start={link_id}"
+                    custom_info = f"\n🆔 Кастомный ID: `{custom_id}`" if custom_id else ""
                     
                     await update.message.reply_text(
                         f"✅ *Спонсорская ссылка создана\\!*\n\n"
                         f"📝 *{escape_markdown_v2(title)}*\n"
                         f"📋 {escape_markdown_v2(description)}\n"
-                        f"👤 Владелец\\: `{target_user_id or 'Не назначен'}`\n\n"
+                        f"👤 Владелец\\: `{target_user_id or 'Не назначен'}`{custom_info}\n\n"
                         f"🔗 `{escape_markdown_v2(link_url)}`",
                         parse_mode='MarkdownV2',
                         reply_markup=sponsor_links_keyboard()
@@ -1626,13 +1604,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Рассылка от админа
         if context.user_data.get('broadcasting') and is_admin:
             context.user_data['broadcast_message'] = text
-            formatted_text = parse_formatting(text)
-            
             await update.message.reply_text(
-                f"📢 *Предпросмотр рассылки:*\n\n{formatted_text}\n\n"
+                f"📢 *Предпросмотр рассылки:*\n\n{text}\n\n"
                 "✅ *Сообщение готово к отправке*\n\n"
                 "Используйте кнопку ниже для отправки:",
-                parse_mode='HTML',
+                parse_mode='MarkdownV2',
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("🚀 Отправить рассылку", callback_data="broadcast_send")],
                     [InlineKeyboardButton("✏️ Редактировать", callback_data="admin_broadcast")]
@@ -1680,6 +1656,9 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
             file_id, msg_type = msg.document.file_id, "document"
             file_size = msg.document.file_size
             file_name = msg.document.file_name
+        elif msg.video_note:
+            file_id, msg_type = msg.video_note.file_id, "video_note"
+            file_size = msg.video_note.file_size
 
         if context.user_data.get('current_link') and file_id:
             link_id = context.user_data.pop('current_link')
@@ -1704,6 +1683,10 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         await context.bot.send_document(link_info[1], file_id, caption=user_caption, parse_mode='MarkdownV2', reply_markup=message_actions_keyboard(msg_id))
                     elif msg_type == 'voice': 
                         await context.bot.send_voice(link_info[1], file_id, caption=user_caption, parse_mode='MarkdownV2', reply_markup=message_actions_keyboard(msg_id))
+                    elif msg_type == 'video_note': 
+                        await context.bot.send_video_note(link_info[1], file_id, reply_markup=message_actions_keyboard(msg_id))
+                        if caption:
+                            await context.bot.send_message(link_info[1], f"📝 *Подпись к кружку:*\n\n{caption}", parse_mode='MarkdownV2')
                 except Exception as e: 
                     logging.error(f"Failed to send media to user: {e}")
                     # Если не удалось отправить, все равно сообщаем пользователю
@@ -2127,6 +2110,10 @@ def generate_beautiful_html_report():
                     <h3>{data['stats']['videos']}</h3>
                     <p>🎥 Видео</p>
                 </div>
+                <div class="stat-card">
+                    <h3>{data['stats']['video_note']}</h3>
+                    <p>⭕️ Кружков</p>
+                </div>
             </div>
             
             <!-- Пользователи -->
@@ -2222,7 +2209,8 @@ def generate_beautiful_html_report():
             "photo": "🖼️", 
             "video": "🎥",
             "document": "📄",
-            "voice": "🎤"
+            "voice": "🎤",
+            "video_note": "⭕️"
         }.get(msg[2], "📄")
         
         from_user = f"@{msg[6]}" if msg[6] else (html.escape(msg[7]) if msg[7] else f"ID:{msg[8]}")
@@ -2277,7 +2265,7 @@ def main():
     application.add_handler(CommandHandler("admin", admin_command))
     application.add_handler(CallbackQueryHandler(button_handler))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-    media_filters = filters.PHOTO | filters.VIDEO | filters.VOICE | filters.Document.ALL
+    media_filters = filters.PHOTO | filters.VIDEO | filters.VOICE | filters.Document.ALL | filters.VIDEO_NOTE
     application.add_handler(MessageHandler(media_filters & ~filters.COMMAND, handle_media))
     
     # Добавление обработчика ошибок
